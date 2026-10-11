@@ -13,7 +13,7 @@
   <span class="spacer"></span>
   <span id="modeCtrl">
     <button id="modeVideoBtn" class="active" title="视频标注模式（快捷键 V）：现有全部功能">视频 [V]</button>
-    <button id="modeVoiceBtn" title="单元打标模式（快捷键 W）：←/→ 跳未标单元，1~7 直接打标，Enter 弹窗">单元 [W]</button>
+    <button id="modeVoiceBtn" title="单元打标模式（快捷键 W）：选中/跳到单元自动播该段（到点自停），←/→ 跳未标单元，1~7 直接打标，Enter 弹窗">单元 [W]</button>
   </span>
   <button id="vocalBtn" title="开启后人声轨播放分离出的 vocals.wav，视频静音；无分离文件自动回退原音">🎤 人声轨</button>
   <span id="speedCtrl">
@@ -46,7 +46,7 @@
       <span id="timeLabel">00:00.000 / 00:00.000</span>
       <span id="axisTag">轴:下 微调1帧</span>
       <span id="pendingLabel"></span>
-      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（1~7 打标 · Enter 弹窗 · S 切分 · Delete 删单元）</span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · 空格播当前段 · 1~7 打标 · Enter 弹窗 · S 切分 · Delete 删单元）</span>
     </div>
   </section>
 
@@ -88,7 +88,7 @@
   <div class="card">
     <h3>快捷键</h3>
     <table>
-      <tr><td><kbd>空格</kbd></td><td>播放 / 暂停</td></tr>
+      <tr><td><kbd>空格</kbd></td><td>播放 / 暂停（单元模式下=只播当前单元那一段，到段尾自动停；再按暂停）</td></tr>
       <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>后退 / 前进单帧 (0.04s)</td></tr>
       <tr><td><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd></td><td>跳 0.5s</td></tr>
       <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>切换 ←/→ 作用的进度轴（免鼠标点击）：↑=上轴（视频进度条）粗调 ±5s，Shift ±30s；↓=下轴（自绘时间轴）微调 单帧/0.5s。人声打标模式下 ↓ 恢复为 上/下一音频段 跳转，↑ 仍为 ±5s 粗定位。金框高亮=当前轴</td></tr>
@@ -107,7 +107,7 @@
       <tr class="v14"><td colspan="2" class="muted">—— v1.6 单元打标（命令词切分） ——</td></tr>
       <tr><td><kbd>V</kbd> / <kbd>W</kbd></td><td>视频标注模式 / 单元打标模式（顶部按钮同步高亮；右侧面板页签随模式切换；除 ←/→ 与数字键外其余键两模式通用）</td></tr>
       <tr><td>标注单元</td><td>ASR 命令词把响段切开：命令词单元（令）+ 空隙单元（隙）+ 响段外命令词（令·asr_only）；空隙全部进入列表由人工逐条判断，不设时长门槛</td></tr>
-      <tr><td><kbd>←</kbd> / <kbd>→</kbd>（单元模式，下轴）</td><td>上一个 / 下一个<b>未打标</b>单元，落点=单元起点并自动暂停；↑ 切上轴后仍是 ±5s 粗调</td></tr>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd>（单元模式，下轴）</td><td>上一个 / 下一个<b>未打标</b>单元，落点=单元起点并<b>自动播放该段</b>（到段尾自停，v1.7）；↑ 切上轴后仍是 ±5s 粗调</td></tr>
       <tr><td><kbd>1</kbd>~<kbd>7</kbd>（单元模式直接按 / 弹窗内）</td><td>上升 / 上升一点 / 下降 / 下降一点 / 停 / 无关段 / 自定义（7 自动聚焦文本框，输入后 Enter 提交）；打完自动跳下一个未标单元</td></tr>
       <tr><td><kbd>Enter</kbd>（单元模式）</td><td>打开当前单元打标弹窗；语音文本自动预填（空隙=非命令片段，命令词=词本身），整句灰字参考</td></tr>
       <tr><td><kbd>S</kbd>（单元模式）</td><td>播放头处把当前单元切成两半（手工单元），两半回到未标态</td></tr>
@@ -115,6 +115,9 @@
       <tr><td>单元列表文本框</td><td>右侧“标注单元”页签内可直接编辑每个单元的文本，失焦即保存</td></tr>
       <tr><td>🎤 人声轨按钮</td><td>开启后视频静音、独立播放 result/vocal_separation/…/vocals.wav，seek/暂停/倍速跟随视频；无分离文件自动回退原音</td></tr>
       <tr><td>单元层配色</td><td>命令词单元=蓝框、空隙=浅灰、手工=紫；绿系=上升、红系=下降、青=停、紫=自定义、深灰半透明=无关段；金框=当前单元；拖动单元两端改边界</td></tr>
+      <tr class="v14"><td colspan="2" class="muted">—— v1.7 段内播放（单元模式） ——</td></tr>
+      <tr><td>选中/跳到单元</td><td>自动从该单元起点播放，播到终点自动停（点列表行、时间轴单元块、←/→ 跳转、打完标自动跳下一段时都触发；音源跟随 🎤 开关）；手动点时间轴则取消段约束</td></tr>
+      <tr><td><kbd>空格</kbd>（单元模式）</td><td>只播当前单元那一段（到段尾自停）；播放中再按=暂停</td></tr>
     </table>
     <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（单元结果存 speech_units 字段；actions、voice_segments 旧字段一律不动）</p>
     <button onclick="toggleHelp()">关闭</button>

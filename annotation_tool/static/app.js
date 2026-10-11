@@ -141,6 +141,7 @@ async function selectVideo(name) {
   renderTimeline(); renderActionList();
   $("transcoding").textContent = "加载 / 转码中，请稍候…";
   $("transcoding").classList.remove("hidden");
+  unitStopAt = null; // v1.7: 切视频清除段播放约束
   video.src = "/media/" + encodeURIComponent(state.folder) + "/" + encodeURIComponent(name);
   if (keepVocal) setVocal(true);
   const [ann, asr, unitsR] = await Promise.all([
@@ -446,9 +447,10 @@ function selectUnit(i) {
   if (i == null || !state.units[i]) return;
   state.curUnit = i;
   const u = state.units[i];
-  seek(u.start_sec); video.pause();
+  seek(u.start_sec);
   renderTimeline(); renderUnitList();
   flash(unitTitle(u, i) + (u.sentence ? `　整句：${u.sentence}` : ""));
+  playUnitSpan(u); // v1.7: 选中/跳到单元 = 自动播那一段，播完即停
 }
 
 function nextUnlabeledUnit(fromIdx) { // 环形查找下一个未打标单元
@@ -566,6 +568,16 @@ function renderUnitList() {
     inp.placeholder = u.kind === "cmd" ? (u.word || "") : "空隙文本（可输入）";
     inp.onchange = () => { u.text = inp.value.trim(); scheduleSave(); };
     inp.onclick = (e) => { e.stopPropagation(); state.curUnit = i; refreshVoiceCur(); renderUnitList._skipFocus = true; };
+    inp.onkeydown = (e) => { // v1.6 fix：焦点在行内文本框时 Enter 不再被全局拦截吞掉——保存文本并打开打标弹窗
+      if (e.key === "Enter") {
+        e.preventDefault(); e.stopPropagation();
+        inp.blur(); // 触发 onchange 保存
+        if (state.mode === "voice") openVoiceModal();
+      } else if (e.key === "Escape") {
+        e.preventDefault(); e.stopPropagation();
+        inp.blur();
+      }
+    };
     const st = document.createElement("span");
     st.className = "ustat" + (u.status === "labeled" ? " lv-" + u.label : u.status === "ignored" ? " ign" : "");
     st.textContent = u.status === "labeled" ? voiceCn(u.label) : u.status === "ignored" ? "无关" : "·";
@@ -657,11 +669,11 @@ function setMode(m) {
   state.mode = m;
   $("modeVideoBtn").classList.toggle("active", m === "video");
   $("modeVoiceBtn").classList.toggle("active", m === "voice");
-  if (m === "voice") state.curVoice = null; else state.curUnit = null;
+  if (m === "voice") state.curVoice = null; else { state.curUnit = null; unitStopAt = null; }
   setPanelTab(m === "voice" ? "units" : "actions");
   renderTimeline(); renderUnitList();
   flash(m === "voice"
-    ? "单元打标：←/→ 跳未标 · 1~5 标签 · 6 无关段 · 7 自定义 · Enter 弹窗 · S 切分 · Delete 删单元"
+    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · Enter 弹窗 · S 切分 · Delete 删单元"
     : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
@@ -716,11 +728,33 @@ function vocalFollow() { // 人声轨跟随视频：seek/播放/暂停/倍速
   if (!video.paused && audio.paused) audio.play().catch(() => {});
 }
 video.addEventListener("play", () => { if (state.vocalOn && audioReady) { audio.currentTime = video.currentTime; audio.playbackRate = video.playbackRate; audio.play().catch(() => {}); } });
-video.addEventListener("pause", () => { if (state.vocalOn && audioReady) audio.pause(); });
+video.addEventListener("pause", () => { unitStopAt = null; if (state.vocalOn && audioReady) audio.pause(); });
 video.addEventListener("seeked", vocalFollow);
 
 // ---------- 播放控制 ----------
+let unitStopAt = null; // v1.7: voice 模式只播当前单元的段——播放头到 end_sec 自动暂停
+
+function playUnitSpan(u) { // 从单元起点播到终点，到点自动停（音源跟随 🎤：video play/pause 事件已同步 audio）
+  unitStopAt = u.end_sec;
+  requestAnimationFrame(unitStopTick);
+  if (video.paused) { const p = video.play(); if (p && p.catch) p.catch(() => {}); }
+}
+function unitStopTick() {
+  if (unitStopAt == null || video.paused) return;
+  if (video.currentTime >= unitStopAt) { unitStopAt = null; video.pause(); return; }
+  requestAnimationFrame(unitStopTick);
+}
+
 function togglePlay() {
+  if (state.mode === "voice" && state.units.length) { // v1.7: W 模式空格=只播当前单元那一段
+    if (!video.paused) { video.pause(); return; }
+    const u = currentUnit(); // 无选中时按播放头/未标兜底定位（会写 state.curUnit）
+    if (!u) { video.play(); return; }
+    renderTimeline(); renderUnitList();
+    seek(u.start_sec);
+    playUnitSpan(u);
+    return;
+  }
   if (video.paused) video.play(); else video.pause();
 }
 function step(dt) {
@@ -846,6 +880,7 @@ applyAxis();
 // ---------- 事件绑定 ----------
 $("folderSel").onchange = (e) => selectFolder(e.target.value);
 timeline.onclick = (e) => {
+  unitStopAt = null; // v1.7: 手动点时间轴 seek，不再受旧段终点约束
   const t = xToTime(e.clientX);
   if (tabHeld) jumpLoud(-1, t); // Tab+左键：跳到点击位置之前的响段边界
   else seek(t);
