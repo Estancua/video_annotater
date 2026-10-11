@@ -100,9 +100,11 @@ function mergeUnits(genUnits, savedUnits, removedIds) {
   const saved = {}, removed = new Set(removedIds || []);
   for (const u of (savedUnits || [])) saved[u.id] = u;
   const out = [];
+  const consumed = new Set();
   for (const g of genUnits) {
     if (removed.has(g.id)) continue;
     const s = saved[g.id];
+    if (s) consumed.add(s.id);
     out.push(s ? {
       ...g,
       text: s.text != null ? s.text : g.text,
@@ -114,9 +116,25 @@ function mergeUnits(genUnits, savedUnits, removedIds) {
                  - (typeof s.start_sec === "number" ? s.start_sec : g.start_sec)).toFixed(3),
     } : g);
   }
+  // v1.8 后端 <0.5s 合并后旧 id 失配：cmd:/gap: 已存条目落在新单元来源或区间内 → 继承标签/状态，不再变手工重复条目
+  const manualSaved = (savedUnits || []).filter(s => /^manual:/.test(s.id));
+  const byMerged = {};
+  for (const g of out) for (const mid of (g.merged_from || [])) byMerged[mid] = g;
+  for (const s of (savedUnits || [])) {
+    if (consumed.has(s.id) || removed.has(s.id) || !/^(cmd|gap):/.test(s.id)) continue;
+    if (manualSaved.some(mi => (mi.start_sec ?? 1e18) <= (s.start_sec ?? 0) + 1e-6
+        && (mi.end_sec ?? -1) >= (s.end_sec ?? 1e18) - 1e-6)) { consumed.add(s.id); continue; } // 已被切分子块覆盖 → 静默消化，避免鬼影行
+    const g = byMerged[s.id]
+      || out.find(u => u.start_sec <= (s.start_sec ?? -1) + 1e-6
+                 && u.end_sec >= (s.end_sec ?? 1e18) - 1e-6);
+    if (!g) continue; // 无法归属 → 仍按手工条目带回
+    consumed.add(s.id);
+    if (!g.label && s.label) g.label = s.label;
+    if (!g.status && s.status) g.status = s.status;
+  }
   const genIds = new Set(genUnits.map(u => u.id));
   for (const s of (savedUnits || [])) {
-    if (!genIds.has(s.id) && !removed.has(s.id)) { // 切分/新增的手工单元原样带回
+    if (!genIds.has(s.id) && !consumed.has(s.id) && !removed.has(s.id)) { // 切分/新增的手工单元原样带回
       out.push({ kind: "manual", label: "", word: "", text: "", sentence: "",
                  source: "manual_edit", status: null, ...s });
     }

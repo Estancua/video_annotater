@@ -46,7 +46,7 @@
       <span id="timeLabel">00:00.000 / 00:00.000</span>
       <span id="axisTag">轴:下 微调1帧</span>
       <span id="pendingLabel"></span>
-      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · 空格播当前段 · 1~7 打标 · Enter 弹窗 · S 切分 · Delete 删单元）</span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · 空格播当前段 · 1~7 打标 · Enter 弹窗 · S 切分 · Delete 删单元 · 间隔&lt;0.5s 自动并一条）</span>
     </div>
   </section>
 
@@ -118,6 +118,9 @@
       <tr class="v14"><td colspan="2" class="muted">—— v1.7 段内播放（单元模式） ——</td></tr>
       <tr><td>选中/跳到单元</td><td>自动从该单元起点播放，播到终点自动停（点列表行、时间轴单元块、←/→ 跳转、打完标自动跳下一段时都触发；音源跟随 🎤 开关）；手动点时间轴则取消段约束</td></tr>
       <tr><td><kbd>空格</kbd>（单元模式）</td><td>只播当前单元那一段（到段尾自停）；播放中再按=暂停</td></tr>
+      <tr class="v14"><td colspan="2" class="muted">—— v1.8 近间隔合并（间隔 &lt; 0.5s 并一条） ——</td></tr>
+      <tr><td>自动合并</td><td>相邻两个单元间隔 &lt; 0.5s（含无缝衔接）自动合成一条：连说命令词标签用 + 拼接（如 <b>stop+up</b>），空隙并入邻近单元；一条合并单元只打一个标签，需要分开标时用 <kbd>S</kbd> 在播放头处切分</td></tr>
+      <tr><td>已标数据</td><td>合并后旧单元已打的标签/状态自动继承到合并行，不会丢失；合并行被 S 切分后各子块回到未标态重新打标</td></tr>
     </table>
     <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（单元结果存 speech_units 字段；actions、voice_segments 旧字段一律不动）</p>
     <button onclick="toggleHelp()">关闭</button>

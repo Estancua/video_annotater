@@ -132,6 +132,48 @@ def _unit_id(kind: str, start: float, end: float, label: str = "") -> str:
     return f"{kind}:{start:.2f}-{end:.2f}" + (f":{label}" if label else "")
 
 
+MERGE_GAP_SEC = 0.5
+
+
+def _merge_close_units(units, gap_sec=MERGE_GAP_SEC):
+    """相邻单元间隔 < gap_sec（含无缝衔接）合并为一条；多条并一条时 label 取非空去重拼接"""
+    groups = []
+    for u in units:
+        if groups and u["start_sec"] - groups[-1][-1]["end_sec"] < gap_sec:
+            groups[-1].append(u)
+        else:
+            groups.append([u])
+    merged = []
+    for g in groups:
+        if len(g) == 1:
+            merged.append(g[0])
+            continue
+        start = min(u["start_sec"] for u in g)
+        end = max(u["end_sec"] for u in g)
+        kind = "cmd" if any(u["kind"] == "cmd" for u in g) else "gap"
+        labels = list(dict.fromkeys(u["label"] for u in g if u.get("label")))
+        label = "+".join(labels)
+        words = " ".join(u["word"] for u in g if u.get("word"))
+        text = " ".join(u["text"] for u in g if u.get("text"))
+        sources = {u["source"] for u in g}
+        source = "loud" if "loud" in sources else ("asr_only" if "asr_only" in sources else "loud_gap")
+        sentence = next((u["sentence"] for u in g if u.get("sentence")), "")
+        merged.append({
+            "id": _unit_id(kind, start, end, label),
+            "kind": kind,
+            "label": label,
+            "word": words,
+            "text": text or words,
+            "start_sec": round(start, 3),
+            "end_sec": round(end, 3),
+            "dur_sec": round(end - start, 3),
+            "source": source,
+            "sentence": sentence,
+            "merged_from": [u["id"] for u in g],
+        })
+    return merged
+
+
 def build_units(loud_segs, asr):
     """以 ASR 命令词为标注单元；命令词把所在响段切开，切剩的空隙全部成为待确认单元"""
     cmds = sorted(asr.get("commands") or [], key=lambda c: c.get("start_sec", 0))
@@ -210,12 +252,15 @@ def build_units(loud_segs, asr):
             })
 
     units.sort(key=lambda u: (u["start_sec"], u["end_sec"]))
+    raw_count = len(units)
+    units = _merge_close_units(units)
     stats = {
         "cmds": len(cmds),
         "cmd_units": sum(1 for u in units if u["kind"] == "cmd"),
         "gap_units": sum(1 for u in units if u["kind"] == "gap"),
         "asr_only": sum(1 for u in units if u["source"] == "asr_only"),
         "loud_segs": len(loud_segs),
+        "merged": raw_count - len(units),
     }
     return units, stats
 
