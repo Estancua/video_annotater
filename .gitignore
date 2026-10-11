@@ -1,0 +1,18 @@
+# 模型权重（609.7MB，只留本地，不入库）
+audio_separation/models/
+
+# 第三方源码仓库（本身是独立 git 仓库，不入库）
+audio_separation/Music-Source-Separation-Training/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 音视频等大数据文件
+*.wav
+*.mp4
+*.mp3
+*.m4a
+
+# 备份文件
+*.bak

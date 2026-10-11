@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>装卸动作标注</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">装卸动作标注</div>
+  <select id="folderSel"><option value="">加载中…</option></select>
+  <span id="saveStatus" class="status"></span>
+  <span class="spacer"></span>
+  <span id="modeCtrl">
+    <button id="modeVideoBtn" class="active" title="视频标注模式（快捷键 V）：现有全部功能">视频 [V]</button>
+    <button id="modeVoiceBtn" title="音频打标模式（快捷键 W）：←/→ 跳音频段，Enter 弹窗打标">音频 [W]</button>
+  </span>
+  <button id="vocalBtn" title="开启后人声轨播放分离出的 vocals.wav，视频静音；无分离文件自动回退原音">🎤 人声轨</button>
+  <span id="speedCtrl">
+    <button data-speed="0.5">0.5x</button>
+    <button data-speed="1" class="active">1x</button>
+    <button data-speed="2">2x</button>
+  </span>
+  <button id="helpBtn">快捷键 ?</button>
+</header>
+
+<main>
+  <aside id="videoList"></aside>
+
+  <section id="center">
+    <div id="playerWrap">
+      <video id="video" controls preload="auto"></video>
+      <audio id="vocalAudio" class="hidden" preload="auto"></audio>
+      <div id="transcoding" class="hidden">转码中，请稍候…</div>
+    </div>
+
+    <div id="timeline">
+      <div id="loudLayer"></div>
+      <div id="asrLayer"></div>
+      <div id="actionLayer"></div>
+      <div id="markerLayer"></div>
+      <div id="playhead"></div>
+    </div>
+
+    <div id="controls">
+      <span id="timeLabel">00:00.000 / 00:00.000</span>
+      <span id="axisTag">轴:下 微调1帧</span>
+      <span id="pendingLabel"></span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 人声打标</span>
+    </div>
+  </section>
+
+  <aside id="actionPanel">
+    <div class="panelHead">动作列表 <span id="actionCount"></span></div>
+    <div id="actionList"></div>
+  </aside>
+</main>
+
+<div id="voiceModal" class="hidden">
+  <div class="card">
+    <h3>人声段打标 <span class="muted">1~6 标签 · 0 忽略 · Esc 取消</span></h3>
+    <div id="vmInfo" class="vmInfo"></div>
+    <div id="vmAsr" class="vmAsr"></div>
+    <div id="vmOptions">
+      <button class="vm-opt" data-label="up">1 上升</button>
+      <button class="vm-opt" data-label="up_small">2 上升一点</button>
+      <button class="vm-opt" data-label="down">3 下降</button>
+      <button class="vm-opt" data-label="down_small">4 下降一点</button>
+      <button class="vm-opt" data-label="stop">5 停</button>
+      <button class="vm-opt" data-label="non_cmd">6 非命令</button>
+      <button class="vm-opt vm-ignore" data-label="__ignore">0 忽略</button>
+      <button class="vm-opt vm-cancel" id="vmCancel">Esc 取消</button>
+    </div>
+    <p class="muted">打标/忽略后自动跳到下一个未处理段；S 可在播放头处切分当前段</p>
+  </div>
+</div>
+
+<div id="helpModal" class="hidden">
+  <div class="card">
+    <h3>快捷键</h3>
+    <table>
+      <tr><td><kbd>空格</kbd></td><td>播放 / 暂停</td></tr>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>后退 / 前进单帧 (0.04s)</td></tr>
+      <tr><td><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd></td><td>跳 0.5s</td></tr>
+      <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>切换 ←/→ 作用的进度轴（免鼠标点击）：↑=上轴（视频进度条）粗调 ±5s，Shift ±30s；↓=下轴（自绘时间轴）微调 单帧/0.5s。人声打标模式下 ↓ 恢复为 上/下一音频段 跳转，↑ 仍为 ±5s 粗定位。金框高亮=当前轴</td></tr>
+      <tr><td><kbd>I</kbd> / <kbd>O</kbd></td><td>设入点 / 出点</td></tr>
+      <tr><td><kbd>1</kbd></td><td>上升：再按一次闭合；有入/出点则按入出点成段</td></tr>
+      <tr><td><kbd>2</kbd></td><td>下降：同上</td></tr>
+      <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>下一个 / 上一个响段边界</td></tr>
+      <tr><td><kbd>Tab</kbd> 按住 + <kbd>←</kbd> 或 左键点进度条</td><td>跳到上一个响段边界（← 从当前位置，点击从点击处往回找）</td></tr>
+      <tr><td><kbd>n</kbd> / <kbd>b</kbd></td><td>下一个 / 上一个 ASR 参考点（命令词的音频终止点；落点=参考点−0.5s 并自动暂停，循环跳转）</td></tr>
+      <tr><td><kbd>Shift</kbd>+<kbd>n</kbd> / <kbd>Shift</kbd>+<kbd>b</kbd></td><td>只在“停”参考点之间跳（适合闭合动作段前定位）</td></tr>
+      <tr><td>ASR 图层（时间轴中部细刻度）</td><td>语音命令词参考刻度：实线=上升/下降，虚线=上升一点/下降一点，灰色=停；点击=跳到该参考点（只读，不可拖动）</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销上一步</td></tr>
+      <tr><td><kbd>Delete</kbd></td><td>删除选中动作（先点动作列表或色块）</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>取消未闭合动作与入/出点</td></tr>
+      <tr><td>鼠标</td><td>点进度条定位；点击蓝色响段跳到段起点；拖动动作色块两端微调</td></tr>
+      <tr class="v14"><td colspan="2" class="muted">—— v1.4 人声打标 ——</td></tr>
+      <tr><td><kbd>V</kbd> / <kbd>W</kbd></td><td>视频标注模式 / 音频打标模式（顶部按钮同步高亮；除 ←/→ 外其余键两模式通用）</td></tr>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd>（音频模式）</td><td>上一个 / 下一个音频段，落点=段起点并自动暂停（段内按 ← 超过 0.5s 先回段起点重听）</td></tr>
+      <tr><td><kbd>Enter</kbd>（音频模式）</td><td>打开当前段打标弹窗；段内 ASR 词自动预填高亮（取第一个刻度词），点色块可直接采用</td></tr>
+      <tr><td><kbd>1</kbd>~<kbd>6</kbd> / <kbd>0</kbd>（弹窗内）</td><td>上升 / 上升一点 / 下降 / 下降一点 / 停 / 非命令 · 忽略（不进训练集，仅扫描跳过）；打完自动跳下一个未处理段</td></tr>
+      <tr><td><kbd>S</kbd>（音频模式）</td><td>播放头处把当前段切成两半，两半回到未处理态（可重新弹窗打标覆盖）</td></tr>
+      <tr><td>🎤 人声轨按钮</td><td>开启后视频静音、独立播放 result/vocal_separation/…/vocals.wav，seek/暂停/倍速跟随视频；无分离文件自动回退原音</td></tr>
+      <tr><td>响段层配色</td><td>未处理=淡蓝；绿系=上升、红系=下降、灰=停、紫=非命令、深灰半透明=忽略；金框=当前段</td></tr>
+    </table>
+    <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（人声结果存 voice_segments 字段）</p>
+    <button onclick="toggleHelp()">关闭</button>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
