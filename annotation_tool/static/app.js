@@ -1,7 +1,10 @@
 "use strict";
-// 装卸动作标注前端 v1.4
+// 装卸动作标注前端 v1.6
 // v1.4: 人声打标（v/w 双模式、voice_segments 模型、Enter 弹窗+ASR 预填、s 切分、人声轨开关）
 // v1.5: ↑/↓ 切换 ←/→ 作用的进度轴（上轴粗调±5s / 下轴微调单帧），免鼠标点击
+// v1.6: 标注单元改为 ASR 命令词切分单元（/api/units）：命令词单元+响段空隙+asr_only；
+//       数字键 1~7 直接打标（6=无关段 7=自定义并聚焦文本框）、←/→ 跳未标单元、Delete 删单元、
+//       文本自动预填可编辑；结果存 speech_units；actions 与 voice_segments 一律不动
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
@@ -10,7 +13,7 @@ const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
 
 const FRAME = 0.04; // 25fps 单帧
 
-const VOICE_LABELS = { up: "上升", up_small: "上升一点", down: "下降", down_small: "下降一点", stop: "停", non_cmd: "非命令" };
+const VOICE_LABELS = { up: "上升", up_small: "上升一点", down: "下降", down_small: "下降一点", stop: "停", non_cmd: "无关段", custom: "自定义" };
 function voiceCn(t) { return VOICE_LABELS[t] || t || ""; }
 
 const state = {
@@ -25,10 +28,16 @@ const state = {
   selected: null,
   dirty: false, saveTimer: null,
   // ---- v1.4 人声打标 ----
-  mode: "video",                  // "video" 视频标注 | "voice" 人声打标（v/w 切换，仅改变 ←/→ 语义）
+  mode: "video",                  // "video" 视频标注 | "voice" 单元打标（v/w 切换，仅改变 ←/→ 语义）
   voice: [],                      // [{start,end,label,status:null|"labeled"|"ignored",srcIdx}] 初始 seed 自响段
   curVoice: null,                 // 当前段索引 = 最近跳转选中的段 ∪ 播放头所在段
   vocalOn: false,                 // 人声轨开关（视频静音 + 独立 audio 播 vocals.wav）
+  // ---- v1.6 命令词切分单元 ----
+  units: [],                      // /api/units + 本地编辑合并后 [{id,kind,label,word,text,start_sec,end_sec,dur_sec,source,sentence,status}]
+  curUnit: null,                  // 当前单元在 state.units 的下标
+  removedUnitIds: [],             // Delete 删掉的生成单元 id（持久化，重建时过滤）
+  unitLegacy: false,              // asr_v2 缺失、回退旧版 ASR（无空隙预填文本）
+  panelTab: "actions",            // 右侧面板当前页签 actions | units
 };
 
 function clamp(t) { return Math.max(0, Math.min(state.duration || 1e9, t)); }
@@ -86,6 +95,36 @@ function seedVoice() {
   return state.loud.map((s, i) => ({ start: s.start_sec, end: s.end_sec, label: null, status: null, srcIdx: i }));
 }
 
+// ---------- v1.6 单元合并：后端生成 ⊕ 已存标注（文本/标签/边界编辑、手动切分单元、删除记录） ----------
+function mergeUnits(genUnits, savedUnits, removedIds) {
+  const saved = {}, removed = new Set(removedIds || []);
+  for (const u of (savedUnits || [])) saved[u.id] = u;
+  const out = [];
+  for (const g of genUnits) {
+    if (removed.has(g.id)) continue;
+    const s = saved[g.id];
+    out.push(s ? {
+      ...g,
+      text: s.text != null ? s.text : g.text,
+      label: s.label != null ? s.label : g.label,
+      status: s.status || null,
+      start_sec: typeof s.start_sec === "number" ? s.start_sec : g.start_sec,
+      end_sec: typeof s.end_sec === "number" ? s.end_sec : g.end_sec,
+      dur_sec: +((typeof s.end_sec === "number" ? s.end_sec : g.end_sec)
+                 - (typeof s.start_sec === "number" ? s.start_sec : g.start_sec)).toFixed(3),
+    } : g);
+  }
+  const genIds = new Set(genUnits.map(u => u.id));
+  for (const s of (savedUnits || [])) {
+    if (!genIds.has(s.id) && !removed.has(s.id)) { // 切分/新增的手工单元原样带回
+      out.push({ kind: "manual", label: "", word: "", text: "", sentence: "",
+                 source: "manual_edit", status: null, ...s });
+    }
+  }
+  out.sort((a, b) => a.start_sec - b.start_sec || a.end_sec - b.end_sec);
+  return out;
+}
+
 async function selectVideo(name) {
   flushSave();
   const keepVocal = state.vocalOn || pendingVocal;
@@ -95,6 +134,7 @@ async function selectVideo(name) {
   state.open = { up: null, down: null }; state.selected = null; state.duration = 0;
   state.asr = [];
   state.voice = []; state.curVoice = null; closeVoiceModal();
+  state.units = []; state.curUnit = null; state.removedUnitIds = []; state.unitLegacy = false;
   document.querySelectorAll(".vitem").forEach(el => el.classList.toggle("active", el.dataset.name === name));
   state.loud = state.loudByVideo[name.replace(/\.[^.]+$/, "")] || [];
   state.voice = seedVoice();
@@ -103,11 +143,13 @@ async function selectVideo(name) {
   $("transcoding").classList.remove("hidden");
   video.src = "/media/" + encodeURIComponent(state.folder) + "/" + encodeURIComponent(name);
   if (keepVocal) setVocal(true);
-  const [ann, asr] = await Promise.all([
+  const [ann, asr, unitsR] = await Promise.all([
     fetch("/api/annotation?folder=" + encodeURIComponent(state.folder)
           + "&video=" + encodeURIComponent(name)).then(r => r.json()),
     fetch("/api/asr?folder=" + encodeURIComponent(state.folder)
           + "&video=" + encodeURIComponent(name)).then(r => r.json()).catch(() => ({})),
+    fetch("/api/units?folder=" + encodeURIComponent(state.folder)
+          + "&video=" + encodeURIComponent(name)).then(r => r.json()).catch(() => ({ units: [] })),
   ]);
   state.actions = (ann.actions || []).map(a => ({ type: a.type, start: a.start_sec, end: a.end_sec }));
   state.asr = (asr.commands || []).map(c => ({
@@ -124,7 +166,13 @@ async function selectVideo(name) {
     state.voice = seedVoice();
   }
   state.curVoice = null;
-  renderTimeline(); renderActionList();
+  // v1.6: 命令词切分单元（/api/units 生成 ⊕ speech_units 已存编辑）
+  state.unitLegacy = !!unitsR.legacy;
+  state.unitStats = unitsR.stats || {};
+  state.removedUnitIds = ann.removed_unit_ids || [];
+  state.units = mergeUnits(unitsR.units || [], ann.speech_units || [], state.removedUnitIds);
+  state.curUnit = null;
+  renderTimeline(); renderActionList(); renderUnitList();
 }
 
 // ---------- 时间轴渲染 ----------
@@ -132,28 +180,75 @@ function pct(t) { return (t / (state.duration || 1)) * 100; }
 
 function renderTimeline() {
   loudLayer.innerHTML = ""; asrLayer.innerHTML = ""; actionLayer.innerHTML = ""; markerLayer.innerHTML = "";
-  state.voice.forEach((s, i) => { // v1.4: 响段层即人声段层，未处理=原淡蓝，贴标后按标签上色
-    const d = document.createElement("div");
-    let cls = "loudseg";
-    if (s.status === "ignored") cls += " ignored";
-    else if (s.status === "labeled" && s.label) cls += " lv-" + s.label;
-    if (i === state.curVoice) cls += " cur";
-    d.className = cls;
-    d.style.left = pct(s.start) + "%";
-    d.style.width = Math.max(0.15, pct(s.end) - pct(s.start)) + "%";
-    d.title = `人声段 ${i + 1}/${state.voice.length} ${fmt(s.start)} - ${fmt(s.end)}`
-      + (s.status ? `【${voiceStatusText(s)}】` : "（未处理，点击跳到段起点）");
-    d.onclick = (e) => {
-      e.stopPropagation();
-      if (state.mode === "voice") selectVoice(i); else seek(s.start);
-    };
-    loudLayer.appendChild(d);
-  });
+  if (state.mode === "voice") { // v1.6: 单元层替换响段层（响段已被命令词切成单元）
+    state.units.forEach((u, i) => {
+      const d = document.createElement("div");
+      let cls = "unitseg u-" + (u.kind || "cmd");
+      if (u.status === "labeled" && u.label) cls += " lv-" + u.label;
+      else if (u.status === "ignored") cls += " ignored";
+      if (i === state.curUnit) cls += " cur";
+      d.className = cls;
+      d.style.left = pct(u.start_sec) + "%";
+      d.style.width = Math.max(0.15, pct(u.end_sec) - pct(u.start_sec)) + "%";
+      d.title = unitTitle(u, i) + "（点击选中；拖动两端改边界）";
+      d.onclick = (e) => { e.stopPropagation(); selectUnit(i); };
+      const l = document.createElement("div"); l.className = "handle hl";
+      const r = document.createElement("div"); r.className = "handle hr";
+      d.appendChild(l); d.appendChild(r);
+      bindUnitDrag(l, i, "start"); bindUnitDrag(r, i, "end");
+      loudLayer.appendChild(d);
+    });
+  } else {
+    state.voice.forEach((s, i) => { // 视频模式维持 v1.4 响段/人声段显示
+      const d = document.createElement("div");
+      let cls = "loudseg";
+      if (s.status === "ignored") cls += " ignored";
+      else if (s.status === "labeled" && s.label) cls += " lv-" + s.label;
+      if (i === state.curVoice) cls += " cur";
+      d.className = cls;
+      d.style.left = pct(s.start) + "%";
+      d.style.width = Math.max(0.15, pct(s.end) - pct(s.start)) + "%";
+      d.title = `人声段 ${i + 1}/${state.voice.length} ${fmt(s.start)} - ${fmt(s.end)}`
+        + (s.status === "labeled" ? `【${voiceCn(s.label)}】`
+          : s.status === "ignored" ? "【忽略】" : "（未处理，点击跳到段起点）");
+      d.onclick = (e) => { e.stopPropagation(); seek(s.start); };
+      loudLayer.appendChild(d);
+    });
+  }
   state.actions.forEach((a, i) => actionLayer.appendChild(actionEl(a, i)));
   renderAsrLayer();
   renderOpenBlocks();
   renderPoints();
   updateTimeLabel();
+}
+
+function unitTitle(u, i) {
+  return `单元 ${i + 1}/${state.units.length} ${u.kind === "cmd" ? "命令词" : u.kind === "gap" ? "空隙" : "手工"} `
+    + `${fmt(u.start_sec)} - ${fmt(u.end_sec)}（${(u.dur_sec || u.end_sec - u.start_sec).toFixed(2)}s）`
+    + (u.text ? ` “${u.text}”` : "")
+    + (u.status === "labeled" ? `【${voiceCn(u.label)}】` : u.status === "ignored" ? "【无关段】" : "【未标】");
+}
+
+function bindUnitDrag(handle, i, which) {
+  handle.addEventListener("mousedown", (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const move = (ev) => {
+      const t = clamp(xToTime(ev.clientX));
+      const u = state.units[i];
+      if (!u) return;
+      if (which === "start") u.start_sec = Math.min(t, u.end_sec - 0.05);
+      else u.end_sec = Math.max(t, u.start_sec + 0.05);
+      u.dur_sec = +(u.end_sec - u.start_sec).toFixed(3);
+      renderUnitList();
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      renderTimeline(); scheduleSave();
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
 }
 
 function refreshVoiceCur() {
@@ -338,124 +433,236 @@ function jumpLoud(dir, from) {
   flash("跳到响段边界 " + fmt(target));
 }
 
-// ---------- v1.4 人声打标 ----------
-function voiceStatusText(s) {
-  if (s.status === "ignored") return "已忽略";
-  if (s.status === "labeled") return voiceCn(s.label);
-  return "未处理";
-}
-
-function setMode(m) {
-  state.mode = m;
-  $("modeVideoBtn").classList.toggle("active", m === "video");
-  $("modeVoiceBtn").classList.toggle("active", m === "voice");
-  $("hint").textContent = m === "video"
-    ? "空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 人声打标"
-    : "人声模式：←/→ 上/下一个音频段（↑ 粗调±5s） · Enter 打标 · S 切分 · 空格播放 · Tab 响段跳转 · V 返回视频标注";
-  flash(m === "voice" ? "音频打标模式（←/→ 跳音频段，Enter 弹窗）" : "视频标注模式");
-}
-
-function selectVoice(i) {
-  if (i == null || !state.voice[i]) return;
-  state.curVoice = i;
-  const s = state.voice[i];
-  seek(s.start); video.pause();
-  renderTimeline();
-  flash(`人声段 ${i + 1}/${state.voice.length} ${fmt(s.start)} - ${fmt(s.end)} · ${voiceStatusText(s)}`);
-}
-
-function jumpVoice(dir) { // w 模式下 ←/→ = 上/下一个音频段，落点=段起点+暂停
-  const segs = state.voice;
-  if (!segs.length) return flash("该视频没有音频段");
-  const t = video.currentTime;
-  let idx = null;
-  if (dir > 0) {
-    idx = segs.findIndex(s => s.start > t + 0.05);
-    if (idx === -1) idx = 0; // 循环
+// ---------- v1.6 单元打标 ----------
+function refreshVoiceCur() {
+  if (state.mode === "voice") {
+    loudLayer.querySelectorAll(".unitseg").forEach((el, i) => el.classList.toggle("cur", i === state.curUnit));
   } else {
-    const cur = segs.findIndex(s => t >= s.start - 0.01 && t <= s.end + 0.01);
-    if (cur !== -1 && t - segs[cur].start > 0.5) idx = cur; // 重听当前段起点
-    else {
-      for (let i = segs.length - 1; i >= 0; i--) if (segs[i].start < t - 0.05) { idx = i; break; }
-      if (idx === null) idx = segs.length - 1; // 循环
-    }
+    loudLayer.querySelectorAll(".loudseg").forEach((el, i) => el.classList.toggle("cur", i === state.curVoice));
   }
-  selectVoice(idx);
 }
 
-function nextUnprocessed() { // 从当前段之后环形查找未处理段
-  const n = state.voice.length;
-  const from = state.curVoice == null ? 0 : state.curVoice + 1;
+function selectUnit(i) {
+  if (i == null || !state.units[i]) return;
+  state.curUnit = i;
+  const u = state.units[i];
+  seek(u.start_sec); video.pause();
+  renderTimeline(); renderUnitList();
+  flash(unitTitle(u, i) + (u.sentence ? `　整句：${u.sentence}` : ""));
+}
+
+function nextUnlabeledUnit(fromIdx) { // 环形查找下一个未打标单元
+  const n = state.units.length;
+  const from = fromIdx == null ? (state.curUnit == null ? 0 : state.curUnit + 1) : fromIdx + 1;
   for (let k = 0; k < n; k++) {
     const i = (from + k) % n;
-    if (!state.voice[i].status) return i;
+    if (!state.units[i].status) return i;
   }
   return null;
 }
 
-function splitVoiceAtPlayhead() { // s：播放头处把当前段切成两半，两半回到未处理态
-  if (state.curVoice == null) return flash("先用 ←/→ 选中一个音频段");
-  const i = state.curVoice, s = state.voice[i];
-  const t = clamp(video.currentTime);
-  if (t <= s.start + 0.05 || t >= s.end - 0.05) return flash("播放头不在段内（离边界太近），无法切分");
-  state.voice.splice(i, 1,
-    { start: s.start, end: t, label: null, status: null, srcIdx: s.srcIdx },
-    { start: t, end: s.end, label: null, status: null, srcIdx: s.srcIdx });
-  state.curVoice = i + 1; // 播放头即右半段起点
-  renderTimeline(); scheduleSave();
-  flash(`已在 ${fmt(t)} 切分，两半均回到未处理`);
+function jumpUnit(dir) { // w 模式下 ←/→ = 上/下一个未打标单元
+  if (!state.units.length) return flash("该视频没有标注单元（检查 result/asr_v2 是否已生成）");
+  const t = video.currentTime;
+  let idx = null;
+  if (dir > 0) {
+    for (let i = 0; i < state.units.length; i++) {
+      if (state.units[i].start_sec > t + 0.05 && !state.units[i].status) { idx = i; break; }
+    }
+    if (idx == null) idx = nextUnlabeledUnit(); // 全跳完则环形找下一个未标
+  } else {
+    if (state.curUnit != null && state.curUnit > 0) {
+      for (let i = state.curUnit - 1; i >= 0; i--) {
+        if (!state.units[i].status) { idx = i; break; }
+      }
+    }
+    if (idx == null) {
+      for (let i = state.units.length - 1; i >= 0; i--) {
+        if (state.units[i].start_sec < t - 0.05 && !state.units[i].status) { idx = i; break; }
+      }
+    }
+    if (idx == null && state.curUnit != null) idx = state.curUnit; // 无更前的未标：留在当前
+  }
+  if (idx == null) { renderUnitList(); return flash("全部单元已打标"); }
+  selectUnit(idx);
 }
 
-// ---------- 打标弹窗 ----------
+function labelUnit(label) { // 数字键 1~7 / 弹窗按钮共用；label=custom 时转弹窗聚焦文本框
+  if (state.curUnit == null) {
+    const t = video.currentTime;
+    let idx = state.units.findIndex(u => t >= u.start_sec - 0.01 && t <= u.end_sec + 0.01);
+    if (idx === -1) idx = nextUnlabeledUnit();
+    if (idx == null && state.units.length) idx = 0;
+    if (idx == null) return flash("该视频没有标注单元");
+    state.curUnit = idx;
+  }
+  const u = state.units[state.curUnit];
+  if (!u) return;
+  if (label === "custom") { openVoiceModal(true); return; }
+  if (label === "non_cmd") { u.label = "non_cmd"; u.status = "ignored"; }
+  else { u.label = label; u.status = "labeled"; }
+  afterUnitLabel();
+}
+
+function afterUnitLabel() {
+  closeVoiceModal();
+  scheduleSave();
+  const nxt = nextUnlabeledUnit();
+  if (nxt == null) { renderTimeline(); renderUnitList(); flash("本视频单元已全部打标"); return; }
+  selectUnit(nxt);
+}
+
+function removeCurrentUnit() { // Delete：删掉当前单元（生成单元记入 removed_unit_ids，手工单元直接移除）
+  if (state.curUnit == null) return flash("先选中一个单元再删除");
+  const u = state.units[state.curUnit];
+  if (u.kind !== "manual" && u.source !== "manual_edit" && u.id) state.removedUnitIds.push(u.id);
+  state.units.splice(state.curUnit, 1);
+  state.curUnit = null;
+  renderTimeline(); renderUnitList(); scheduleSave();
+  flash(`已删除单元 ${fmt(u.start_sec)} - ${fmt(u.end_sec)}（可 Ctrl+Z 恢复前请先保存？改动即时生效）`);
+}
+
+function splitUnitAtPlayhead() { // S：播放头处把当前单元切成两半，两半回到未标
+  if (state.curUnit == null) return flash("先用 ←/→ 选中一个单元");
+  const i = state.curUnit, u = state.units[i];
+  const t = clamp(video.currentTime);
+  if (t <= u.start_sec + 0.05 || t >= u.end_sec - 0.05) return flash("播放头不在单元内（离边界太近），无法切分");
+  const mid = +t.toFixed(3);
+  const a = { ...u, id: `manual:${u.start_sec.toFixed(2)}-${mid.toFixed(2)}`,
+              kind: "manual", start_sec: u.start_sec, end_sec: mid, dur_sec: +(mid - u.start_sec).toFixed(3),
+              label: "", status: null, source: "manual_edit", word: "", text: "" };
+  const b = { ...u, id: `manual:${mid.toFixed(2)}-${u.end_sec.toFixed(2)}`,
+              kind: "manual", start_sec: mid, end_sec: u.end_sec, dur_sec: +(u.end_sec - mid).toFixed(3),
+              label: "", status: null, source: "manual_edit", word: "", text: "" };
+  const wasGen = u.kind !== "manual" && u.source !== "manual_edit";
+  if (wasGen) state.removedUnitIds.push(u.id); // 原生成单元不再出现
+  state.units.splice(i, 1, a, b);
+  state.curUnit = i + 1;
+  renderTimeline(); renderUnitList(); scheduleSave();
+  flash(`已在 ${fmt(mid)} 切分，两半均回到未标`);
+}
+
+// ---------- 单元列表（右侧面板） ----------
+function renderUnitList() {
+  const box = $("unitList");
+  if (!box) return;
+  box.innerHTML = "";
+  const done = state.units.filter(u => u.status).length;
+  $("unitCount").textContent = state.units.length ? `(${done}/${state.units.length})` : "";
+  state.units.forEach((u, i) => {
+    const row = document.createElement("div");
+    row.className = "urow" + (i === state.curUnit ? " selected" : "") + (u.status ? " done" : "");
+    const badge = document.createElement("span");
+    badge.className = "ubadge " + (u.kind || "cmd");
+    badge.textContent = u.kind === "cmd" ? voiceCn(u.label || u.word) || "令"
+                      : u.kind === "gap" ? "隙" : u.kind === "manual" ? "手" : "令";
+    if (u.source === "asr_only") badge.title = "响段外的命令词";
+    const span = document.createElement("span");
+    span.className = "utime";
+    span.textContent = `${u.start_sec.toFixed(1)}-${u.end_sec.toFixed(1)}`;
+    const inp = document.createElement("input");
+    inp.className = "utext";
+    inp.value = u.text || "";
+    inp.placeholder = u.kind === "cmd" ? (u.word || "") : "空隙文本（可输入）";
+    inp.onchange = () => { u.text = inp.value.trim(); scheduleSave(); };
+    inp.onclick = (e) => { e.stopPropagation(); state.curUnit = i; refreshVoiceCur(); renderUnitList._skipFocus = true; };
+    const st = document.createElement("span");
+    st.className = "ustat" + (u.status === "labeled" ? " lv-" + u.label : u.status === "ignored" ? " ign" : "");
+    st.textContent = u.status === "labeled" ? voiceCn(u.label) : u.status === "ignored" ? "无关" : "·";
+    row.appendChild(badge); row.appendChild(span); row.appendChild(inp); row.appendChild(st);
+    row.onclick = () => selectUnit(i);
+    box.appendChild(row);
+  });
+}
+
+// ---------- 打标弹窗（v1.6：面向当前单元，文本预填可编辑） ----------
+const UNIT_KEY_LABELS = { "1": "up", "2": "up_small", "3": "down", "4": "down_small", "5": "stop", "6": "non_cmd", "7": "custom" };
 let modalPrefill = null;
 
-function openVoiceModal() {
-  if (!state.voice.length) return flash("该视频没有音频段");
-  if (state.curVoice == null) {
-    const t = video.currentTime;
-    let idx = state.voice.findIndex(s => t >= s.start - 0.01 && t <= s.end + 0.01);
-    if (idx === -1) idx = nextUnprocessed();
-    if (idx == null) idx = 0;
-    selectVoice(idx);
-  }
-  const s = state.voice[state.curVoice];
-  $("vmInfo").textContent = `人声段 ${state.curVoice + 1}/${state.voice.length}　`
-    + `${fmt(s.start)} - ${fmt(s.end)}　时长 ${(s.end - s.start).toFixed(2)}s`
-    + (s.status ? `　当前：${voiceStatusText(s)}` : "");
+function currentUnit() { // 无选中时按播放头/环形未标定位一个单元
+  if (state.curUnit != null && state.units[state.curUnit]) return state.units[state.curUnit];
+  const t = video.currentTime;
+  let idx = state.units.findIndex(u => t >= u.start_sec - 0.01 && t <= u.end_sec + 0.01);
+  if (idx === -1) idx = nextUnlabeledUnit(0);
+  if (idx == null) idx = state.units.length ? 0 : null;
+  if (idx == null) return null;
+  state.curUnit = idx;
+  return state.units[idx];
+}
+
+function openVoiceModal(forceText) { // forceText：按 7 进入时聚焦文本框
+  if (!state.units.length) return flash("该视频没有标注单元（检查 result/asr_v2 是否已生成）");
+  const u = currentUnit();
+  if (!u) return;
+  $("vmInfo").textContent = unitTitle(u, state.curUnit);
+  $("vmSentence").textContent = u.sentence ? `整句：${u.sentence}`
+    : (u.word ? `命令词：${u.word}` : "（无整句上下文）");
+  const inp = $("vmText");
+  inp.value = u.text || ""; // v1.6: ASR 内容自动预填（空隙=非命令片段，命令词=词本身）
   const box = $("vmAsr"); box.innerHTML = "";
-  const words = state.asr.filter(c => c.end > s.start + 0.001 && c.start < s.end - 0.001);
-  modalPrefill = words.length ? words[0].type : null; // 预填=段内第一个 ASR 刻度词
-  const lab = document.createElement("span");
-  lab.className = "muted";
-  lab.textContent = words.length ? "段内 ASR（已预填首项，点击色块可直接采用）：" : "段内 ASR：无";
-  box.appendChild(lab);
-  for (const w of words) {
-    const b = document.createElement("button");
-    b.className = "asrchip " + w.type;
-    b.textContent = `${w.word}·${voiceCn(w.type)}`;
-    b.onclick = () => applyVoiceLabel(w.type);
-    box.appendChild(b);
+  const words = state.asr.filter(c => c.end > u.start_sec + 0.001 && c.start < u.end_sec - 0.001);
+  modalPrefill = words.length ? words[0].type : null;
+  if (words.length) {
+    const lab = document.createElement("span");
+    lab.className = "muted";
+    lab.textContent = "单元内 ASR（点色块=采用并打标）：";
+    box.appendChild(lab);
+    for (const w of words) {
+      const b = document.createElement("button");
+      b.className = "asrchip " + w.type;
+      b.textContent = `${w.word}·${voiceCn(w.type)}`;
+      b.onclick = () => { inp.value = w.word; applyVoiceLabel(w.type); };
+      box.appendChild(b);
+    }
   }
   document.querySelectorAll("#vmOptions .vm-opt[data-label]").forEach(b => {
     b.classList.toggle("prefill", b.dataset.label === modalPrefill);
-    b.classList.toggle("current", b.dataset.label === s.label);
+    b.classList.toggle("current", u.status === "labeled" && b.dataset.label === u.label);
   });
   $("voiceModal").classList.remove("hidden");
+  if (forceText) inp.focus();
 }
 
-function closeVoiceModal() { $("voiceModal").classList.add("hidden"); }
+function closeVoiceModal() {
+  $("voiceModal").classList.add("hidden");
+  const a = document.activeElement;
+  if (a && a.id === "vmText") a.blur();
+}
 
-function applyVoiceLabel(label) { // label ∈ up/up_small/down/down_small/stop/non_cmd 或 "__ignore"
-  const i = state.curVoice;
-  if (i == null) { closeVoiceModal(); return; }
-  const s = state.voice[i];
-  if (label === "__ignore") { s.label = null; s.status = "ignored"; }
-  else { s.label = label; s.status = "labeled"; }
-  closeVoiceModal();
-  scheduleSave();
-  const nxt = nextUnprocessed();
-  if (nxt == null) { renderTimeline(); flash("本视频音频段已全部处理"); return; } // 原地停住
-  selectVoice(nxt); // 自动跳下一个未处理段（内部已 renderTimeline）
+function applyVoiceLabel(label) { // 弹窗按钮/数字键共用：up/up_small/down/down_small/stop/non_cmd/custom
+  const u = currentUnit();
+  if (!u) { closeVoiceModal(); return; }
+  const el = $("vmText");
+  const text = el ? el.value.trim() : "";
+  if (label === "non_cmd") { u.label = "non_cmd"; u.status = "ignored"; }
+  else if (label === "custom") {
+    if (!text) { flash("请先输入语音文本，再按 Enter 提交"); if (el) el.focus(); return; }
+    u.label = "custom"; u.status = "labeled";
+  } else { u.label = label; u.status = "labeled"; }
+  if (text) u.text = text;
+  afterUnitLabel(); // 关弹窗 + scheduleSave + 跳下一个未标单元
+}
+
+// ---------- v1.6 模式 / 右侧面板页签 ----------
+function setPanelTab(tab) {
+  state.panelTab = tab;
+  $("tabActionsBtn").classList.toggle("active", tab === "actions");
+  $("tabUnitsBtn").classList.toggle("active", tab === "units");
+  $("actionList").classList.toggle("hidden", tab !== "actions");
+  $("unitList").classList.toggle("hidden", tab !== "units");
+}
+
+function setMode(m) {
+  if (state.mode === m) return;
+  state.mode = m;
+  $("modeVideoBtn").classList.toggle("active", m === "video");
+  $("modeVoiceBtn").classList.toggle("active", m === "voice");
+  if (m === "voice") state.curVoice = null; else state.curUnit = null;
+  setPanelTab(m === "voice" ? "units" : "actions");
+  renderTimeline(); renderUnitList();
+  flash(m === "voice"
+    ? "单元打标：←/→ 跳未标 · 1~5 标签 · 6 无关段 · 7 自定义 · Enter 弹窗 · S 切分 · Delete 删单元"
+    : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
 // ---------- 人声轨 ----------
@@ -534,10 +741,10 @@ function updateTimeLabel() {
   if (state.open.up != null) pend.push(`上升(未闭合, 起 ${fmt(state.open.up)})`);
   if (state.open.down != null) pend.push(`下降(未闭合, 起 ${fmt(state.open.down)})`);
   $("pendingLabel").textContent = pend.join("  ");
-  if (state.mode === "voice" && state.voice.length) { // 播放头落在某段内也视为选中
+  if (state.mode === "voice" && state.units.length) { // v1.6: 播放头落在某单元内也视为选中
     const t = video.currentTime;
-    const idx = state.voice.findIndex(s => t >= s.start - 0.01 && t <= s.end + 0.01);
-    if (idx !== -1 && idx !== state.curVoice) { state.curVoice = idx; refreshVoiceCur(); }
+    const idx = state.units.findIndex(u => t >= u.start_sec - 0.01 && t <= u.end_sec + 0.01);
+    if (idx !== -1 && idx !== state.curUnit) { state.curUnit = idx; refreshVoiceCur(); renderUnitList(); }
   }
   vocalFollow();
 }
@@ -582,12 +789,15 @@ function buildPayload() {
       start: fmt(a.start), end: fmt(a.end),
       source_segment_idx: segIndexAt(a.start),
     })),
-    voice_segments: state.voice.map(s => ({ // v1.4: 人声打标结果（ignored 仅扫描跳过，不进训练集）
-      start_sec: +s.start.toFixed(3), end_sec: +s.end.toFixed(3),
-      start: fmt(s.start), end: fmt(s.end),
-      label: s.label, status: s.status,
-      source_segment_idx: s.srcIdx,
+    // v1.6: 单元打标结果。不再提交 voice_segments（服务端沿用旧值，动作/旧人声结果一律不动）
+    speech_units: state.units.map(u => ({
+      id: u.id, kind: u.kind || "cmd",
+      word: u.word || "", text: u.text || "",
+      start_sec: +u.start_sec.toFixed(3), end_sec: +u.end_sec.toFixed(3),
+      label: u.label || null, status: u.status || null,
+      source: u.source || "", sentence: u.sentence || "",
     })),
+    removed_unit_ids: state.removedUnitIds,
   };
 }
 function scheduleSave() {
@@ -629,7 +839,7 @@ function setAxis(top) {
   if (document.activeElement === video) video.blur(); // 焦点离开视频，屏蔽原生 ±5s 叠加
   applyAxis();
   flash(top ? "上轴（粗调）：←/→ ±5s，Shift ±30s"
-            : "下轴（微调）：←/→ 单帧，Shift 0.5s" + (state.mode === "voice" ? " · 人声模式恢复段跳转" : ""));
+            : "下轴（微调）：←/→ 单帧，Shift 0.5s" + (state.mode === "voice" ? " · 单元模式恢复未标单元跳转" : ""));
 }
 applyAxis();
 
@@ -670,8 +880,8 @@ window.addEventListener("keydown", (e) => {
   if (tag === "input" || tag === "select" || tag === "textarea") return;
   const vm = $("voiceModal");
   if (vm && !vm.classList.contains("hidden")) { // 弹窗打开时只放行打标选键，其余快捷键全部拦截
-    const map = { "1": "up", "2": "up_small", "3": "down", "4": "down_small", "5": "stop", "6": "non_cmd", "0": "__ignore" };
-    if (map[e.key]) { e.preventDefault(); applyVoiceLabel(map[e.key]); return; }
+    if (UNIT_KEY_LABELS[e.key]) { e.preventDefault(); applyVoiceLabel(UNIT_KEY_LABELS[e.key]); return; }
+    if (e.key === "Enter") { e.preventDefault(); applyVoiceLabel("custom"); return; } // 提交文本=自定义
     if (e.key === "Escape") { e.preventDefault(); closeVoiceModal(); return; }
     e.preventDefault();
     return;
@@ -684,13 +894,13 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       if (document.activeElement === video) video.blur(); // 屏蔽视频原生 ±5s，步进只由脚本控制
       if (tabHeld) { tabConsumed = true; jumpLoud(-1); break; } // Tab+←：上一个响段边界
-      if (state.mode === "voice") { if (fastAxis) step(-axisStep(e.shiftKey)); else jumpVoice(-1); }
+      if (state.mode === "voice") { if (fastAxis) step(-axisStep(e.shiftKey)); else jumpUnit(-1); }
       else step(fastAxis ? -axisStep(e.shiftKey) : (e.shiftKey ? -0.5 : -FRAME));
       break;
     case "ArrowRight":
       e.preventDefault();
       if (document.activeElement === video) video.blur();
-      if (state.mode === "voice") { if (fastAxis) step(axisStep(e.shiftKey)); else jumpVoice(1); }
+      if (state.mode === "voice") { if (fastAxis) step(axisStep(e.shiftKey)); else jumpUnit(1); }
       else step(fastAxis ? axisStep(e.shiftKey) : (e.shiftKey ? 0.5 : FRAME));
       break;
     case "v": case "V":
@@ -698,20 +908,25 @@ window.addEventListener("keydown", (e) => {
       setMode("video"); break;                     // 视频标注模式
     case "w": case "W":
       if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+W
-      setMode("voice"); break;                     // 音频打标模式
+      setMode("voice"); break;                     // 单元打标模式
     case "Enter":
       if (state.mode === "voice") { e.preventDefault(); openVoiceModal(); } break; // 打标弹窗
     case "s": case "S":
       if (e.ctrlKey || e.metaKey) break; // 保留 Ctrl+S 浏览器行为
-      if (state.mode === "voice") { e.preventDefault(); splitVoiceAtPlayhead(); } break; // 切分当前段
+      if (state.mode === "voice") { e.preventDefault(); splitUnitAtPlayhead(); } break; // 切分当前单元
     case "i": case "I":
       state.inPoint = clamp(video.currentTime);
       renderPoints(); flash("入点 " + fmt(state.inPoint)); break;
     case "o": case "O":
       state.outPoint = clamp(video.currentTime);
       renderPoints(); flash("出点 " + fmt(state.outPoint)); break;
-    case "1": quickType("up"); break;
-    case "2": quickType("down"); break;
+    case "1": case "2": case "3": case "4": case "5": case "6": case "7":
+      if (state.mode === "voice") { // v1.6: 选中单元直接按数字键打标
+        e.preventDefault();
+        labelUnit(UNIT_KEY_LABELS[e.key]);
+      } else if (e.key === "1") quickType("up");
+      else if (e.key === "2") quickType("down");
+      break;
     case "n": case "N":
       if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+N
       e.preventDefault(); jumpAsr(1, e.shiftKey); break;  // 下一个参考点（Shift 限“停”）
@@ -722,7 +937,10 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       tabHeld = true; tabShift = e.shiftKey; tabConsumed = false; break; // 松开时才跳段，方便 Tab+← 组合
     case "z": case "Z": if (e.ctrlKey || e.metaKey) { e.preventDefault(); undo(); } break;
-    case "Delete": if (state.selected != null) deleteAction(state.selected); break;
+    case "Delete": // v1.6: 单元模式删当前单元，视频模式删选中动作
+      if (state.mode === "voice" && state.curUnit != null) { e.preventDefault(); removeCurrentUnit(); }
+      else if (state.selected != null) deleteAction(state.selected);
+      break;
     case "Escape": cancelPending(); break;
     case "?": case "h": case "H": toggleHelp(); break;
   }
@@ -745,13 +963,22 @@ function toggleHelp() { $("helpModal").classList.toggle("hidden"); }
 $("helpBtn").onclick = toggleHelp;
 $("helpModal").onclick = (e) => { if (e.target.id === "helpModal") toggleHelp(); };
 
-// ---------- v1.4 模式按钮 / 弹窗按钮绑定 ----------
+// ---------- v1.4/v1.6 模式按钮 / 页签 / 弹窗按钮绑定 ----------
 $("modeVideoBtn").onclick = () => setMode("video");
 $("modeVoiceBtn").onclick = () => setMode("voice");
+$("tabActionsBtn").onclick = () => setPanelTab("actions");
+$("tabUnitsBtn").onclick = () => setPanelTab("units");
 document.querySelectorAll("#vmOptions .vm-opt[data-label]").forEach(b => {
-  b.onclick = () => applyVoiceLabel(b.dataset.label);
+  b.onclick = () => {
+    if (b.dataset.label === "custom") { $("vmText").focus(); return; } // 7=聚焦输入框
+    applyVoiceLabel(b.dataset.label);
+  };
 });
 $("vmCancel").onclick = closeVoiceModal;
 $("voiceModal").onclick = (e) => { if (e.target.id === "voiceModal") closeVoiceModal(); };
+$("vmText").addEventListener("keydown", (e) => { // 文本框内：Enter 提交自定义，Esc 取消
+  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); applyVoiceLabel("custom"); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeVoiceModal(); }
+});
 
 loadFolders();

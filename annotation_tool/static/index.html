@@ -13,7 +13,7 @@
   <span class="spacer"></span>
   <span id="modeCtrl">
     <button id="modeVideoBtn" class="active" title="视频标注模式（快捷键 V）：现有全部功能">视频 [V]</button>
-    <button id="modeVoiceBtn" title="音频打标模式（快捷键 W）：←/→ 跳音频段，Enter 弹窗打标">音频 [W]</button>
+    <button id="modeVoiceBtn" title="单元打标模式（快捷键 W）：←/→ 跳未标单元，1~7 直接打标，Enter 弹窗">单元 [W]</button>
   </span>
   <button id="vocalBtn" title="开启后人声轨播放分离出的 vocals.wav，视频静音；无分离文件自动回退原音">🎤 人声轨</button>
   <span id="speedCtrl">
@@ -46,32 +46,41 @@
       <span id="timeLabel">00:00.000 / 00:00.000</span>
       <span id="axisTag">轴:下 微调1帧</span>
       <span id="pendingLabel"></span>
-      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 人声打标</span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（1~7 打标 · Enter 弹窗 · S 切分 · Delete 删单元）</span>
     </div>
   </section>
 
   <aside id="actionPanel">
-    <div class="panelHead">动作列表 <span id="actionCount"></span></div>
+    <div id="panelTabs">
+      <button id="tabActionsBtn" class="ptab active">动作列表 <span id="actionCount"></span></button>
+      <button id="tabUnitsBtn" class="ptab">标注单元 <span id="unitCount"></span></button>
+    </div>
     <div id="actionList"></div>
+    <div id="unitList" class="hidden"></div>
   </aside>
 </main>
 
 <div id="voiceModal" class="hidden">
   <div class="card">
-    <h3>人声段打标 <span class="muted">1~6 标签 · 0 忽略 · Esc 取消</span></h3>
+    <h3>单元打标 <span class="muted">1~5 标签 · 6 无关段 · 7 自定义 · Enter 提交 · Esc 取消</span></h3>
     <div id="vmInfo" class="vmInfo"></div>
+    <div id="vmSentence" class="vmSentence muted"></div>
     <div id="vmAsr" class="vmAsr"></div>
+    <div class="vmTextRow">
+      <label for="vmText">语音文本</label>
+      <input id="vmText" type="text" placeholder="ASR 已预填，可编辑；按 7 或直接改后 Enter 提交为自定义">
+    </div>
     <div id="vmOptions">
       <button class="vm-opt" data-label="up">1 上升</button>
       <button class="vm-opt" data-label="up_small">2 上升一点</button>
       <button class="vm-opt" data-label="down">3 下降</button>
       <button class="vm-opt" data-label="down_small">4 下降一点</button>
       <button class="vm-opt" data-label="stop">5 停</button>
-      <button class="vm-opt" data-label="non_cmd">6 非命令</button>
-      <button class="vm-opt vm-ignore" data-label="__ignore">0 忽略</button>
+      <button class="vm-opt" data-label="non_cmd">6 无关段</button>
+      <button class="vm-opt" data-label="custom">7 自定义</button>
       <button class="vm-opt vm-cancel" id="vmCancel">Esc 取消</button>
     </div>
-    <p class="muted">打标/忽略后自动跳到下一个未处理段；S 可在播放头处切分当前段</p>
+    <p class="muted">打标后自动跳到下一个未标单元；S 在播放头处切分当前单元，Delete 删除当前单元</p>
   </div>
 </div>
 
@@ -92,19 +101,22 @@
       <tr><td><kbd>Shift</kbd>+<kbd>n</kbd> / <kbd>Shift</kbd>+<kbd>b</kbd></td><td>只在“停”参考点之间跳（适合闭合动作段前定位）</td></tr>
       <tr><td>ASR 图层（时间轴中部细刻度）</td><td>语音命令词参考刻度：实线=上升/下降，虚线=上升一点/下降一点，灰色=停；点击=跳到该参考点（只读，不可拖动）</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销上一步</td></tr>
-      <tr><td><kbd>Delete</kbd></td><td>删除选中动作（先点动作列表或色块）</td></tr>
+      <tr><td><kbd>Delete</kbd></td><td>视频模式：删除选中动作（先点动作列表或色块）；单元模式：删除当前单元</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>取消未闭合动作与入/出点</td></tr>
       <tr><td>鼠标</td><td>点进度条定位；点击蓝色响段跳到段起点；拖动动作色块两端微调</td></tr>
-      <tr class="v14"><td colspan="2" class="muted">—— v1.4 人声打标 ——</td></tr>
-      <tr><td><kbd>V</kbd> / <kbd>W</kbd></td><td>视频标注模式 / 音频打标模式（顶部按钮同步高亮；除 ←/→ 外其余键两模式通用）</td></tr>
-      <tr><td><kbd>←</kbd> / <kbd>→</kbd>（音频模式）</td><td>上一个 / 下一个音频段，落点=段起点并自动暂停（段内按 ← 超过 0.5s 先回段起点重听）</td></tr>
-      <tr><td><kbd>Enter</kbd>（音频模式）</td><td>打开当前段打标弹窗；段内 ASR 词自动预填高亮（取第一个刻度词），点色块可直接采用</td></tr>
-      <tr><td><kbd>1</kbd>~<kbd>6</kbd> / <kbd>0</kbd>（弹窗内）</td><td>上升 / 上升一点 / 下降 / 下降一点 / 停 / 非命令 · 忽略（不进训练集，仅扫描跳过）；打完自动跳下一个未处理段</td></tr>
-      <tr><td><kbd>S</kbd>（音频模式）</td><td>播放头处把当前段切成两半，两半回到未处理态（可重新弹窗打标覆盖）</td></tr>
+      <tr class="v14"><td colspan="2" class="muted">—— v1.6 单元打标（命令词切分） ——</td></tr>
+      <tr><td><kbd>V</kbd> / <kbd>W</kbd></td><td>视频标注模式 / 单元打标模式（顶部按钮同步高亮；右侧面板页签随模式切换；除 ←/→ 与数字键外其余键两模式通用）</td></tr>
+      <tr><td>标注单元</td><td>ASR 命令词把响段切开：命令词单元（令）+ 空隙单元（隙）+ 响段外命令词（令·asr_only）；空隙全部进入列表由人工逐条判断，不设时长门槛</td></tr>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd>（单元模式，下轴）</td><td>上一个 / 下一个<b>未打标</b>单元，落点=单元起点并自动暂停；↑ 切上轴后仍是 ±5s 粗调</td></tr>
+      <tr><td><kbd>1</kbd>~<kbd>7</kbd>（单元模式直接按 / 弹窗内）</td><td>上升 / 上升一点 / 下降 / 下降一点 / 停 / 无关段 / 自定义（7 自动聚焦文本框，输入后 Enter 提交）；打完自动跳下一个未标单元</td></tr>
+      <tr><td><kbd>Enter</kbd>（单元模式）</td><td>打开当前单元打标弹窗；语音文本自动预填（空隙=非命令片段，命令词=词本身），整句灰字参考</td></tr>
+      <tr><td><kbd>S</kbd>（单元模式）</td><td>播放头处把当前单元切成两半（手工单元），两半回到未标态</td></tr>
+      <tr><td><kbd>Delete</kbd>（单元模式）</td><td>删除当前单元：生成单元记入 removed_unit_ids 不再出现，手工单元直接移除</td></tr>
+      <tr><td>单元列表文本框</td><td>右侧“标注单元”页签内可直接编辑每个单元的文本，失焦即保存</td></tr>
       <tr><td>🎤 人声轨按钮</td><td>开启后视频静音、独立播放 result/vocal_separation/…/vocals.wav，seek/暂停/倍速跟随视频；无分离文件自动回退原音</td></tr>
-      <tr><td>响段层配色</td><td>未处理=淡蓝；绿系=上升、红系=下降、灰=停、紫=非命令、深灰半透明=忽略；金框=当前段</td></tr>
+      <tr><td>单元层配色</td><td>命令词单元=蓝框、空隙=浅灰、手工=紫；绿系=上升、红系=下降、青=停、紫=自定义、深灰半透明=无关段；金框=当前单元；拖动单元两端改边界</td></tr>
     </table>
-    <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（人声结果存 voice_segments 字段）</p>
+    <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（单元结果存 speech_units 字段；actions、voice_segments 旧字段一律不动）</p>
     <button onclick="toggleHelp()">关闭</button>
   </div>
 </div>
