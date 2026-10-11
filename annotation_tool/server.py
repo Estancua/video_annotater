@@ -27,6 +27,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR = PROJECT_ROOT / "raw_video"
 LOUD_DIR = PROJECT_ROOT / "result" / "loud_segments"
+LOUD_V_DIR = PROJECT_ROOT / "result" / "loud_segments_vocals"  # 人声轨响段（v2.1）
 ANN_DIR = PROJECT_ROOT / "result" / "annotations"
 ASR_DIR = PROJECT_ROOT / "result" / "asr"
 ASR_V2_DIR = PROJECT_ROOT / "result" / "asr_v2"
@@ -69,14 +70,58 @@ def list_videos(folder: str):
                   if p.suffix.lower() in VIDEO_EXTS and p.is_file())
 
 
-def load_loud(folder: str):
-    f = LOUD_DIR / f"{folder}.json"
+def _load_loud_json(d: Path, folder: str):
+    f = d / f"{folder}.json"
     if not f.is_file():
-        return {"files": []}
+        return None
     try:
         return json.loads(f.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {"files": [], "error": str(e)}
+    except Exception:
+        return None
+
+
+def _loud_by_stem(data):
+    return {Path(item.get("file", "")).stem: item
+            for item in (data or {}).get("files") or []}
+
+
+def has_saved_units(folder: str, stem: str) -> bool:
+    """该视频是否已有语音单元标注（用于按视频锁定响段基准，保护存量标注）"""
+    p = ANN_DIR / folder / f"{stem}.json"
+    if not p.is_file():
+        return False
+    try:
+        return bool(json.loads(p.read_text(encoding="utf-8")).get("speech_units"))
+    except Exception:
+        return False
+
+
+def pick_loud_entry(folder: str, stem: str, v_map: dict, o_map: dict):
+    """v2.1 按视频锁定基准：已标语音单元的视频沿用整轨响段，其余优先人声版；缺哪个回退另一个"""
+    if has_saved_units(folder, stem):
+        first, second = o_map.get(stem), v_map.get(stem)
+    else:
+        first, second = v_map.get(stem), o_map.get(stem)
+    e = first or second
+    return e, ("vocals" if e is v_map.get(stem) else "full_mix")
+
+
+def loud_entry(folder: str, stem: str):
+    v_map = _loud_by_stem(_load_loud_json(LOUD_V_DIR, folder))
+    o_map = _loud_by_stem(_load_loud_json(LOUD_DIR, folder))
+    return pick_loud_entry(folder, stem, v_map, o_map)[0]
+
+
+def load_loud(folder: str):
+    """合并视图：每个文件带 loud_source 标记（vocals/full_mix）"""
+    v_map = _loud_by_stem(_load_loud_json(LOUD_V_DIR, folder))
+    o_map = _loud_by_stem(_load_loud_json(LOUD_DIR, folder))
+    files = []
+    for stem in sorted(set(v_map) | set(o_map)):
+        e, src = pick_loud_entry(folder, stem, v_map, o_map)
+        if e:
+            files.append({**e, "loud_source": src})
+    return {"folder": folder, "files": files}
 
 
 def annotation_path(folder: str, video: str) -> Path:
@@ -125,6 +170,62 @@ def load_asr_v2(folder: str, video: str):
         except Exception as e:
             return {"exists": False, "error": str(e)}
     return {"exists": False}
+
+
+WAVE_BIN_SEC = 0.02  # 人声波形包络粒度（秒/箱）
+
+
+def _compute_waveform(wav_path: Path):
+    """vocals.wav -> 每 20ms RMS 包络（mono）"""
+    import numpy as np
+    import soundfile as sf
+    arr, sr = sf.read(str(wav_path), dtype="float32")
+    if arr.ndim > 1:
+        arr = arr.mean(axis=1)
+    duration = len(arr) / float(sr) if sr else 0.0
+    hop = max(1, int(round(sr * WAVE_BIN_SEC)))
+    n = max(1, int(np.ceil(len(arr) / hop)))
+    if n * hop > len(arr):
+        arr = np.pad(arr, (0, n * hop - len(arr)))
+    rms = np.sqrt(np.mean(arr[:n * hop].reshape(n, hop) ** 2, axis=1))
+    return {
+        "bin_sec": WAVE_BIN_SEC,
+        "duration_sec": round(duration, 3),
+        "max": round(float(rms.max()) if rms.size else 0.0, 5),
+        "rms": [round(float(x), 5) for x in rms],
+    }
+
+
+def load_waveform(folder: str, video: str):
+    """人声波形包络；磁盘缓存 result/annotation_cache/waveforms/<folder>/<stem>.json"""
+    stem = Path(video).stem
+    wav = VOCAL_DIR / folder / stem / "vocals.wav"
+    out = CACHE_DIR / "waveforms" / folder / f"{stem}.json"
+    if wav.is_file() and out.is_file() and out.stat().st_mtime >= wav.stat().st_mtime:
+        try:
+            return json.loads(out.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if not wav.is_file():
+        return {"available": False, "reason": "no_vocals"}
+    with _path_lock(str(out)):
+        if out.is_file() and out.stat().st_mtime >= wav.stat().st_mtime:
+            try:
+                return json.loads(out.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        try:
+            payload = _compute_waveform(wav)
+        except Exception as e:
+            return {"available": False, "reason": repr(e)}
+        payload["available"] = True
+        payload["file"] = wav.name
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass  # 缓存写失败不影响返回
+        return payload
 
 
 def _unit_id(kind: str, start: float, end: float, label: str = "") -> str:
@@ -394,11 +495,7 @@ class Handler(BaseHTTPRequestHandler):
                 folder = safe_name(q.get("folder", [""])[0])
                 video = safe_name(q.get("video", [""])[0])
                 stem = Path(video).stem
-                segs = []
-                for item in load_loud(folder).get("files") or []:
-                    if Path(item.get("file", "")).stem == stem:
-                        segs = item.get("segments") or []
-                        break
+                segs = (loud_entry(folder, stem) or {}).get("segments") or []
                 asr = load_asr_v2(folder, video)
                 legacy = False
                 if not asr.get("exists"):
@@ -415,6 +512,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not p.is_file():
                     return self.send_error(404, "无人声分离文件")
                 return self.send_media_range(p, "audio/wav")
+            if path == "/api/waveform":
+                folder = safe_name(q.get("folder", [""])[0])
+                video = safe_name(q.get("video", [""])[0])
+                return self.send_json(load_waveform(folder, video))
             if path.startswith("/media/"):
                 parts = [safe_name(unquote(x)) for x in path[len("/media/"):].split("/") if x]
                 if len(parts) != 2:
@@ -467,6 +568,7 @@ def main():
     print(f"标注服务器已启动: http://localhost:{PORT}")
     print(f"  原始视频: {RAW_DIR}")
     print(f"  响段目录: {LOUD_DIR}")
+    print(f"  人声响段: {LOUD_V_DIR}（新视频优先，已标视频按视频锁定沿用整轨版）")
     print(f"  标注输出: {ANN_DIR}")
     print(f"  新版ASR : {ASR_V2_DIR}")
     print(f"  转码缓存: {CACHE_DIR}")

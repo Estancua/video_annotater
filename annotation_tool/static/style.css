@@ -49,11 +49,16 @@ video { max-width: 100%; max-height: 100%; background: #000; }
 }
 
 #timeline {
-  position: relative; height: 64px; margin-top: 10px;
+  position: relative; height: 84px; margin-top: 10px;
   background: #22262c; border-radius: 6px; overflow: hidden; cursor: crosshair;
 }
+/* v2.1: 顶部人声波形包络条（点击/拖动定位），其余三层整体下移 */
+#waveCanvas {
+  position: absolute; left: 0; top: 2px; width: 100%; height: 16px;
+  cursor: pointer; z-index: 1;
+}
 .loudseg {
-  position: absolute; top: 3px; height: 12px; opacity: 0.6; /* 未处理：弱化淡蓝 */
+  position: absolute; top: 22px; height: 12px; opacity: 0.6; /* 未处理：弱化淡蓝 */
   background: rgba(61, 129, 246, 0.35);
   border-left: 1px solid rgba(127, 176, 255, 0.6); border-right: 1px solid rgba(127, 176, 255, 0.6);
 }
@@ -67,13 +72,13 @@ video { max-width: 100%; max-height: 100%; background: #000; }
 .loudseg.lv-no_vocal { background: #4b6074; opacity: 0.9; }
 .loudseg.ignored { background: #3a3f47; opacity: 0.35; }
 .loudseg.cur { outline: 1px solid #ffd166; opacity: 1; z-index: 2; }
-.asrmark { position: absolute; top: 18px; height: 11px; width: 2px; cursor: pointer; z-index: 1; }
+.asrmark { position: absolute; top: 37px; height: 11px; width: 2px; cursor: pointer; z-index: 1; }
 .asrmark.up { background: #2e9e5b; }
 .asrmark.up_small { background: none; border-left: 2px dashed #6fcf97; width: 0; }
 .asrmark.down { background: #d05050; }
 .asrmark.down_small { background: none; border-left: 2px dashed #e58a8a; width: 0; }
 .asrmark.stop { background: #b8bfc9; }
-.action { position: absolute; top: 31px; height: 26px; border-radius: 4px; opacity: 0.92; }
+.action { position: absolute; top: 50px; height: 26px; border-radius: 4px; opacity: 0.92; }
 .action.up { background: #2e9e5b; }
 .action.down { background: #d05050; }
 .action.selected { outline: 2px solid #ffd166; z-index: 2; }
@@ -153,7 +158,7 @@ kbd { background: #2b3038; border: 1px solid #3a3f47; border-radius: 4px; paddin
 
 /* ---------- v1.6 单元时间轴层 ---------- */
 .unitseg {
-  position: absolute; top: 3px; height: 12px; opacity: 0.75;
+  position: absolute; top: 22px; height: 12px; opacity: 0.75;
   background: rgba(61, 129, 246, 0.25);
   border-left: 2px solid rgba(127, 176, 255, 0.9); border-right: 2px solid rgba(127, 176, 255, 0.9);
 }

@@ -6,11 +6,13 @@
 //       数字键 1~8 直接打标（6=无关段 7=自定义并聚焦文本框 8=无人声段）、←/→ 跳未标单元、Delete 删单元、
 //       文本自动预填可编辑；结果存 speech_units；actions 与 voice_segments 一律不动
 // v2.0: M 键将当前单元与下一相邻单元手动合并（任意间隔；label 去重 + 拼接、原 id 记入 removed 防重）
+// v2.1: 时间轴顶部人声波形包络条（点击/拖动定位）；空格锚点播放（点段内→从该点播到段尾自停）；
+//       W 模式 ←/→ 改为跳相邻单元（不筛未标）；响段基准改人声轨（服务端按视频锁定，前端无感）
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
       actionLayer = $("actionLayer"), markerLayer = $("markerLayer"), playhead = $("playhead"),
-      audio = $("vocalAudio");
+      audio = $("vocalAudio"), waveCanvas = $("waveCanvas");
 
 const FRAME = 0.04; // 25fps 单帧
 
@@ -39,6 +41,8 @@ const state = {
   removedUnitIds: [],             // Delete 删掉的生成单元 id（持久化，重建时过滤）
   unitLegacy: false,              // asr_v2 缺失、回退旧版 ASR（无空隙预填文本）
   panelTab: "actions",            // 右侧面板当前页签 actions | units
+  // ---- v2.1 人声波形包络 ----
+  wave: null,                     // /api/waveform 返回 {bin_sec,duration_sec,max,rms[]}；无 vocals.wav 时为 null
 };
 
 function clamp(t) { return Math.max(0, Math.min(state.duration || 1e9, t)); }
@@ -161,16 +165,22 @@ async function selectVideo(name) {
   $("transcoding").textContent = "加载 / 转码中，请稍候…";
   $("transcoding").classList.remove("hidden");
   unitStopAt = null; // v1.7: 切视频清除段播放约束
+  playAnchor = null; // v2.1: 切视频清除锚点播放
+  state.wave = null; renderWave(); // v2.1: 新视频先清波形条（无数据占位），fetch 后重绘
   video.src = "/media/" + encodeURIComponent(state.folder) + "/" + encodeURIComponent(name);
   if (keepVocal) setVocal(true);
-  const [ann, asr, unitsR] = await Promise.all([
+  const [ann, asr, unitsR, waveR] = await Promise.all([
     fetch("/api/annotation?folder=" + encodeURIComponent(state.folder)
           + "&video=" + encodeURIComponent(name)).then(r => r.json()),
     fetch("/api/asr?folder=" + encodeURIComponent(state.folder)
           + "&video=" + encodeURIComponent(name)).then(r => r.json()).catch(() => ({})),
     fetch("/api/units?folder=" + encodeURIComponent(state.folder)
           + "&video=" + encodeURIComponent(name)).then(r => r.json()).catch(() => ({ units: [] })),
+    fetch("/api/waveform?folder=" + encodeURIComponent(state.folder)
+          + "&video=" + encodeURIComponent(name)).then(r => r.json()).catch(() => null),
   ]);
+  if (waveR && waveR.available && Array.isArray(waveR.rms)) state.wave = waveR;
+  renderWave();
   state.actions = (ann.actions || []).map(a => ({ type: a.type, start: a.start_sec, end: a.end_sec }));
   state.asr = (asr.commands || []).map(c => ({
     type: c.label, word: c.word, start: +c.start_sec || 0, end: +c.end_sec || 0,
@@ -464,6 +474,7 @@ function refreshVoiceCur() {
 
 function selectUnit(i) {
   if (i == null || !state.units[i]) return;
+  playAnchor = null; // v2.1: 选中/跳到单元 = 整段语义，清除“段内起点”锚点
   state.curUnit = i;
   const u = state.units[i];
   seek(u.start_sec);
@@ -482,29 +493,25 @@ function nextUnlabeledUnit(fromIdx) { // 环形查找下一个未打标单元
   return null;
 }
 
-function jumpUnit(dir) { // w 模式下 ←/→ = 上/下一个未打标单元
+function jumpUnit(dir) { // v2.1: w 模式下 ←/→ = 上/下一个相邻单元（不筛已标/未标、不环形）；
+                         // 打完标自动跳下一个未标仍走 nextUnlabeledUnit（afterUnitLabel，语义不变）
   if (!state.units.length) return flash("该视频没有标注单元（检查 result/asr_v2 是否已生成）");
   const t = video.currentTime;
-  let idx = null;
-  if (dir > 0) {
-    for (let i = 0; i < state.units.length; i++) {
-      if (state.units[i].start_sec > t + 0.05 && !state.units[i].status) { idx = i; break; }
-    }
-    if (idx == null) idx = nextUnlabeledUnit(); // 全跳完则环形找下一个未标
+  const inIdx = state.units.findIndex(u => t >= u.start_sec - 0.01 && t <= u.end_sec + 0.01);
+  let idx;
+  if (inIdx !== -1) {
+    idx = inIdx + dir; // 播放头在某单元内：取其相邻
+  } else if (dir > 0) {
+    idx = state.units.findIndex(u => u.start_sec > t + 0.05); // 两单元之间：向后最近的单元
   } else {
-    if (state.curUnit != null && state.curUnit > 0) {
-      for (let i = state.curUnit - 1; i >= 0; i--) {
-        if (!state.units[i].status) { idx = i; break; }
-      }
+    idx = -1;
+    for (let i = state.units.length - 1; i >= 0; i--) {
+      if (state.units[i].end_sec < t - 0.05) { idx = i; break; }
     }
-    if (idx == null) {
-      for (let i = state.units.length - 1; i >= 0; i--) {
-        if (state.units[i].start_sec < t - 0.05 && !state.units[i].status) { idx = i; break; }
-      }
-    }
-    if (idx == null && state.curUnit != null) idx = state.curUnit; // 无更前的未标：留在当前
   }
-  if (idx == null) { renderUnitList(); return flash("全部单元已打标"); }
+  if (idx < 0 || idx >= state.units.length) {
+    return flash(dir > 0 ? "已是最后一个单元（←/→ 跳相邻，不循环）" : "已是第一个单元（←/→ 跳相邻，不循环）");
+  }
   selectUnit(idx);
 }
 
@@ -715,7 +722,7 @@ function setMode(m) {
   setPanelTab(m === "voice" ? "units" : "actions");
   renderTimeline(); renderUnitList();
   flash(m === "voice"
-    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元"
+    ? "单元打标：←/→ 跳相邻单元（自动播该段） · 空格播当前段（点过段内则从该点播到段尾） · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元"
     : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
@@ -775,6 +782,9 @@ video.addEventListener("seeked", vocalFollow);
 
 // ---------- 播放控制 ----------
 let unitStopAt = null; // v1.7: voice 模式只播当前单元的段——播放头到 end_sec 自动暂停
+let playAnchor = null; // v2.1: 时间轴/波形条最近点击（或拖动结束）的时间点。
+                       // W 模式空格：锚点落在某单元内 → 从锚点播到该单元尾自停；段尾自停后
+                       // 锚点清除，再按空格回到“播当前单元整段”的原语义。
 
 function playUnitSpan(u) { // 从单元起点播到终点，到点自动停（音源跟随 🎤：video play/pause 事件已同步 audio）
   unitStopAt = u.end_sec;
@@ -783,13 +793,24 @@ function playUnitSpan(u) { // 从单元起点播到终点，到点自动停（�
 }
 function unitStopTick() {
   if (unitStopAt == null || video.paused) return;
-  if (video.currentTime >= unitStopAt) { unitStopAt = null; video.pause(); return; }
+  if (video.currentTime >= unitStopAt) { unitStopAt = null; playAnchor = null; video.pause(); return; } // v2.1: 到段尾自停同时消耗锚点
   requestAnimationFrame(unitStopTick);
 }
 
 function togglePlay() {
   if (state.mode === "voice" && state.units.length) { // v1.7: W 模式空格=只播当前单元那一段
     if (!video.paused) { video.pause(); return; }
+    if (playAnchor != null) { // v2.1: 上一次动作是点时间轴/波形条——锚点在某单元内则从该点播到段尾
+      const idx = state.units.findIndex(u => playAnchor >= u.start_sec - 0.01 && playAnchor < u.end_sec - 0.01);
+      if (idx !== -1) {
+        state.curUnit = idx;
+        renderTimeline(); renderUnitList();
+        seek(playAnchor);
+        playUnitSpan(state.units[idx]);
+        return;
+      }
+      playAnchor = null; // 锚点在段外：回到“播选中单元整段”
+    }
     const u = currentUnit(); // 无选中时按播放头/未标兜底定位（会写 state.curUnit）
     if (!u) { video.play(); return; }
     renderTimeline(); renderUnitList();
@@ -915,7 +936,7 @@ function setAxis(top) {
   if (document.activeElement === video) video.blur(); // 焦点离开视频，屏蔽原生 ±5s 叠加
   applyAxis();
   flash(top ? "上轴（粗调）：←/→ ±5s，Shift ±30s"
-            : "下轴（微调）：←/→ 单帧，Shift 0.5s" + (state.mode === "voice" ? " · 单元模式恢复未标单元跳转" : ""));
+            : "下轴（微调）：←/→ 单帧，Shift 0.5s" + (state.mode === "voice" ? " · 单元模式恢复相邻单元跳转" : ""));
 }
 applyAxis();
 
@@ -924,9 +945,74 @@ $("folderSel").onchange = (e) => selectFolder(e.target.value);
 timeline.onclick = (e) => {
   unitStopAt = null; // v1.7: 手动点时间轴 seek，不再受旧段终点约束
   const t = xToTime(e.clientX);
-  if (tabHeld) jumpLoud(-1, t); // Tab+左键：跳到点击位置之前的响段边界
-  else seek(t);
+  if (tabHeld) { jumpLoud(-1, t); } // Tab+左键：跳到点击位置之前的响段边界
+  else {
+    playAnchor = t; // v2.1: 记住“最近点击点”，W 模式空格=从点处播到所在单元尾（段外则回整段）
+    seek(t);
+  }
 };
+
+// ---------- v2.1 人声波形包络条 ----------
+function renderWave() {
+  if (!waveCanvas) return;
+  const w = waveCanvas.clientWidth || timeline.clientWidth || 1;
+  const h = waveCanvas.clientHeight || 16;
+  const dpr = window.devicePixelRatio || 1;
+  waveCanvas.width = Math.max(1, Math.round(w * dpr));
+  waveCanvas.height = Math.max(1, Math.round(h * dpr));
+  const ctx = waveCanvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const wave = state.wave, dur = state.duration || 0;
+  if (!wave || !dur) { // 无 vocals.wav / 未加载：占位文案
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "11px 'Segoe UI', 'Microsoft YaHei', sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(dur ? "无人声波形数据（缺 vocals.wav）" : "人声波形：加载中…", 6, h / 2);
+    return;
+  }
+  const bins = wave.rms || [];
+  const binSec = wave.bin_sec || 0.02;
+  const maxRms = wave.max || 0;
+  ctx.fillStyle = "rgba(150, 110, 240, 0.9)"; // 与人声轨按钮同色系（紫）
+  const n = Math.max(1, Math.floor(w));
+  for (let px = 0; px < n; px++) {
+    const t0 = px / n * dur, t1 = (px + 1) / n * dur;
+    let a = Math.floor(t0 / binSec), b = Math.ceil(t1 / binSec);
+    if (b <= a) b = a + 1;
+    let peak = 0;
+    for (let i = a; i < b && i < bins.length; i++) if (bins[i] > peak) peak = bins[i];
+    const hh = maxRms > 0 ? Math.sqrt(peak / maxRms) * (h - 2) : 0;
+    if (hh > 0.3) ctx.fillRect(px, h - hh, 1, hh);
+  }
+}
+
+let waveScrubbing = false;
+if (waveCanvas) {
+  const waveDown = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    waveScrubbing = true;
+    unitStopAt = null; // 与点时间轴一致：解除旧段约束
+    playAnchor = xToTime(e.clientX);
+    seek(playAnchor);
+    const mv = (ev) => {
+      if (!waveScrubbing) return;
+      playAnchor = xToTime(ev.clientX); // 拖动持续更新锚点，松手后空格=从该点播到段尾
+      seek(playAnchor);
+    };
+    const up = () => {
+      waveScrubbing = false;
+      document.removeEventListener("mousemove", mv);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", mv);
+    document.addEventListener("mouseup", up);
+  };
+  waveCanvas.addEventListener("mousedown", waveDown);
+  waveCanvas.addEventListener("click", (e) => e.stopPropagation()); // 避免 timeline.onclick 重复处理
+}
+window.addEventListener("resize", renderWave);
 
 document.querySelectorAll("#speedCtrl button").forEach(b => {
   b.onclick = () => {
@@ -939,6 +1025,7 @@ document.querySelectorAll("#speedCtrl button").forEach(b => {
 video.addEventListener("loadedmetadata", () => {
   state.duration = video.duration || 0;
   renderTimeline();
+  renderWave(); // v2.1: 拿到时长后才能按时间轴宽度换算波形
 });
 video.addEventListener("canplay", () => $("transcoding").classList.add("hidden"));
 video.addEventListener("waiting", () => $("transcoding").classList.remove("hidden"));
