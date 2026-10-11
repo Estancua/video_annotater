@@ -5,6 +5,7 @@
 // v1.6: 标注单元改为 ASR 命令词切分单元（/api/units）：命令词单元+响段空隙+asr_only；
 //       数字键 1~8 直接打标（6=无关段 7=自定义并聚焦文本框 8=无人声段）、←/→ 跳未标单元、Delete 删单元、
 //       文本自动预填可编辑；结果存 speech_units；actions 与 voice_segments 一律不动
+// v2.0: M 键将当前单元与下一相邻单元手动合并（任意间隔；label 去重 + 拼接、原 id 记入 removed 防重）
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
@@ -562,6 +563,29 @@ function splitUnitAtPlayhead() { // S：播放头处把当前单元切成两半�
   flash(`已在 ${fmt(mid)} 切分，两半均回到未标`);
 }
 
+function mergeNextUnit() { // M：当前单元与下一个相邻单元手动合并（不受间隔 <0.5s 自动合并限制）
+  if (state.curUnit == null) return flash("先用 ←/→ 选中一个单元");
+  const i = state.curUnit, a = state.units[i], b = state.units[i + 1];
+  if (!b) return flash("已是最后一个单元，没有可合并的下一段");
+  const labels = [...new Set([a.label, b.label].filter(Boolean))]; // 与 v1.8 自动合并同语义：非空去重 + 拼接
+  const m = { ...a, id: `manual:${a.start_sec.toFixed(2)}-${b.end_sec.toFixed(2)}`,
+              kind: "manual", start_sec: a.start_sec, end_sec: b.end_sec,
+              dur_sec: +(b.end_sec - a.start_sec).toFixed(3),
+              label: labels.join("+"),
+              status: (a.status === "labeled" || b.status === "labeled") ? "labeled"
+                    : (a.status === "ignored" || b.status === "ignored") ? "ignored" : null,
+              source: "manual_edit",
+              word: [a.word, b.word].filter(Boolean).join(" "),
+              text: [a.text, b.text].filter(Boolean).join(" "),
+              sentence: a.sentence || b.sentence || "" };
+  for (const u of [a, b]) if (!state.removedUnitIds.includes(u.id)) state.removedUnitIds.push(u.id); // 原 id 不再由生成/带回路径出现
+  state.units.splice(i, 2, m);
+  state.curUnit = i;
+  renderTimeline(); renderUnitList(); scheduleSave();
+  const gap = (b.start_sec - a.end_sec).toFixed(1);
+  flash(`已合并 ${fmt(m.start_sec)}~${fmt(m.end_sec)}（间隔 ${gap}s）`);
+}
+
 // ---------- 单元列表（右侧面板） ----------
 function renderUnitList() {
   const box = $("unitList");
@@ -691,7 +715,7 @@ function setMode(m) {
   setPanelTab(m === "voice" ? "units" : "actions");
   renderTimeline(); renderUnitList();
   flash(m === "voice"
-    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · Delete 删单元"
+    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元"
     : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
@@ -967,6 +991,8 @@ window.addEventListener("keydown", (e) => {
     case "s": case "S":
       if (e.ctrlKey || e.metaKey) break; // 保留 Ctrl+S 浏览器行为
       if (state.mode === "voice") { e.preventDefault(); splitUnitAtPlayhead(); } break; // 切分当前单元
+    case "m": case "M":
+      if (state.mode === "voice") { e.preventDefault(); mergeNextUnit(); } break; // 当前单元与下一相邻单元合并
     case "i": case "I":
       state.inPoint = clamp(video.currentTime);
       renderPoints(); flash("入点 " + fmt(state.inPoint)); break;

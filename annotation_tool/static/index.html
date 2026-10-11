@@ -13,7 +13,7 @@
   <span class="spacer"></span>
   <span id="modeCtrl">
     <button id="modeVideoBtn" class="active" title="视频标注模式（快捷键 V）：现有全部功能">视频 [V]</button>
-    <button id="modeVoiceBtn" title="单元打标模式（快捷键 W）：选中/跳到单元自动播该段（到点自停），←/→ 跳未标单元，1~8 直接打标（8=无人声段），Enter 弹窗">单元 [W]</button>
+    <button id="modeVoiceBtn" title="单元打标模式（快捷键 W）：选中/跳到单元自动播该段（到点自停），←/→ 跳未标单元，1~8 直接打标（8=无人声段），Enter 弹窗，S 切分 / M 与下一相邻单元合并">单元 [W]</button>
   </span>
   <button id="vocalBtn" title="开启后人声轨播放分离出的 vocals.wav，视频静音；无分离文件自动回退原音">🎤 人声轨</button>
   <span id="speedCtrl">
@@ -46,7 +46,7 @@
       <span id="timeLabel">00:00.000 / 00:00.000</span>
       <span id="axisTag">轴:下 微调1帧</span>
       <span id="pendingLabel"></span>
-      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · 空格播当前段 · 1~7 打标 · 8 无人声段 · Enter 弹窗 · S 切分 · Delete 删单元 · 间隔&lt;0.5s 自动并一条）</span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · 空格播当前段 · 1~7 打标 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元 · 间隔&lt;0.5s 自动并一条）</span>
     </div>
   </section>
 
@@ -112,6 +112,7 @@
       <tr><td><kbd>1</kbd>~<kbd>8</kbd>（单元模式直接按 / 弹窗内）</td><td>上升 / 上升一点 / 下降 / 下降一点 / 停 / 无关段 / 自定义（7 自动聚焦文本框，输入后 Enter 提交）/ 无人声段（8=该单元内没有人说话）；打完自动跳下一个未标单元</td></tr>
       <tr><td><kbd>Enter</kbd>（单元模式）</td><td>打开当前单元打标弹窗；语音文本自动预填（空隙=非命令片段，命令词=词本身），整句灰字参考</td></tr>
       <tr><td><kbd>S</kbd>（单元模式）</td><td>播放头处把当前单元切成两半（手工单元），两半回到未标态</td></tr>
+      <tr><td><kbd>M</kbd>（单元模式）</td><td>把当前单元与<b>下一个相邻单元</b>手动合并成一条（任意间隔都并）：文本/命令词空格拼接，已标标签去重后用 + 连接（如 <b>stop+up</b>），两边都未标则合并后仍未标；想和上一段并就先用 <kbd>←</kbd> 选中上一段再按 <kbd>M</kbd></td></tr>
       <tr><td><kbd>Delete</kbd>（单元模式）</td><td>删除当前单元：生成单元记入 removed_unit_ids 不再出现，手工单元直接移除</td></tr>
       <tr><td>单元列表文本框</td><td>右侧“标注单元”页签内可直接编辑每个单元的文本，失焦即保存</td></tr>
       <tr><td>🎤 人声轨按钮</td><td>开启后视频静音、独立播放 result/vocal_separation/…/vocals.wav，seek/暂停/倍速跟随视频；无分离文件自动回退原音</td></tr>
@@ -120,7 +121,7 @@
       <tr><td>选中/跳到单元</td><td>自动从该单元起点播放，播到终点自动停（点列表行、时间轴单元块、←/→ 跳转、打完标自动跳下一段时都触发；音源跟随 🎤 开关）；手动点时间轴则取消段约束</td></tr>
       <tr><td><kbd>空格</kbd>（单元模式）</td><td>只播当前单元那一段（到段尾自停）；播放中再按=暂停</td></tr>
       <tr class="v14"><td colspan="2" class="muted">—— v1.8 近间隔合并（间隔 &lt; 0.5s 并一条） ——</td></tr>
-      <tr><td>自动合并</td><td>相邻两个单元间隔 &lt; 0.5s（含无缝衔接）自动合成一条：连说命令词标签用 + 拼接（如 <b>stop+up</b>），空隙并入邻近单元；一条合并单元只打一个标签，需要分开标时用 <kbd>S</kbd> 在播放头处切分</td></tr>
+      <tr><td>自动合并</td><td>相邻两个单元间隔 &lt; 0.5s（含无缝衔接）自动合成一条：连说命令词标签用 + 拼接（如 <b>stop+up</b>），空隙并入邻近单元；一条合并单元只打一个标签，需要分开标时用 <kbd>S</kbd> 在播放头处切分；间隔 ≥ 0.5s 的两段想并成一条时选中前一段按 <kbd>M</kbd> 手动合并</td></tr>
       <tr><td>已标数据</td><td>合并后旧单元已打的标签/状态自动继承到合并行，不会丢失；合并行被 S 切分后各子块回到未标态重新打标</td></tr>
     </table>
     <p class="muted">标记自动保存到 result/annotations/&lt;日期文件夹&gt;/&lt;视频名&gt;.json（单元结果存 speech_units 字段；actions、voice_segments 旧字段一律不动）</p>
