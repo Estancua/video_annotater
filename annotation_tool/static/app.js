@@ -3,7 +3,7 @@
 // v1.4: 人声打标（v/w 双模式、voice_segments 模型、Enter 弹窗+ASR 预填、s 切分、人声轨开关）
 // v1.5: ↑/↓ 切换 ←/→ 作用的进度轴（上轴粗调±5s / 下轴微调单帧），免鼠标点击
 // v1.6: 标注单元改为 ASR 命令词切分单元（/api/units）：命令词单元+响段空隙+asr_only；
-//       数字键 1~7 直接打标（6=无关段 7=自定义并聚焦文本框）、←/→ 跳未标单元、Delete 删单元、
+//       数字键 1~8 直接打标（6=无关段 7=自定义并聚焦文本框 8=无人声段）、←/→ 跳未标单元、Delete 删单元、
 //       文本自动预填可编辑；结果存 speech_units；actions 与 voice_segments 一律不动
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
@@ -13,7 +13,7 @@ const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
 
 const FRAME = 0.04; // 25fps 单帧
 
-const VOICE_LABELS = { up: "上升", up_small: "上升一点", down: "下降", down_small: "下降一点", stop: "停", non_cmd: "无关段", custom: "自定义" };
+const VOICE_LABELS = { up: "上升", up_small: "上升一点", down: "下降", down_small: "下降一点", stop: "停", non_cmd: "无关段", custom: "自定义", no_vocal: "无人声段" };
 function voiceCn(t) { return VOICE_LABELS[t] || t || ""; }
 
 const state = {
@@ -507,7 +507,7 @@ function jumpUnit(dir) { // w 模式下 ←/→ = 上/下一个未打标单元
   selectUnit(idx);
 }
 
-function labelUnit(label) { // 数字键 1~7 / 弹窗按钮共用；label=custom 时转弹窗聚焦文本框
+function labelUnit(label) { // 数字键 1~8 / 弹窗按钮共用；label=custom 时转弹窗聚焦文本框
   if (state.curUnit == null) {
     const t = video.currentTime;
     let idx = state.units.findIndex(u => t >= u.start_sec - 0.01 && t <= u.end_sec + 0.01);
@@ -606,7 +606,7 @@ function renderUnitList() {
 }
 
 // ---------- 打标弹窗（v1.6：面向当前单元，文本预填可编辑） ----------
-const UNIT_KEY_LABELS = { "1": "up", "2": "up_small", "3": "down", "4": "down_small", "5": "stop", "6": "non_cmd", "7": "custom" };
+const UNIT_KEY_LABELS = { "1": "up", "2": "up_small", "3": "down", "4": "down_small", "5": "stop", "6": "non_cmd", "7": "custom", "8": "no_vocal" };
 let modalPrefill = null;
 
 function currentUnit() { // 无选中时按播放头/环形未标定位一个单元
@@ -659,7 +659,7 @@ function closeVoiceModal() {
   if (a && a.id === "vmText") a.blur();
 }
 
-function applyVoiceLabel(label) { // 弹窗按钮/数字键共用：up/up_small/down/down_small/stop/non_cmd/custom
+function applyVoiceLabel(label) { // 弹窗按钮/数字键共用：up/up_small/down/down_small/stop/non_cmd/custom/no_vocal
   const u = currentUnit();
   if (!u) { closeVoiceModal(); return; }
   const el = $("vmText");
@@ -691,7 +691,7 @@ function setMode(m) {
   setPanelTab(m === "voice" ? "units" : "actions");
   renderTimeline(); renderUnitList();
   flash(m === "voice"
-    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · Enter 弹窗 · S 切分 · Delete 删单元"
+    ? "单元打标：←/→ 跳未标（自动播该段） · 空格播当前段 · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · Delete 删单元"
     : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
@@ -973,7 +973,7 @@ window.addEventListener("keydown", (e) => {
     case "o": case "O":
       state.outPoint = clamp(video.currentTime);
       renderPoints(); flash("出点 " + fmt(state.outPoint)); break;
-    case "1": case "2": case "3": case "4": case "5": case "6": case "7":
+    case "1": case "2": case "3": case "4": case "5": case "6": case "7": case "8":
       if (state.mode === "voice") { // v1.6: 选中单元直接按数字键打标
         e.preventDefault();
         labelUnit(UNIT_KEY_LABELS[e.key]);

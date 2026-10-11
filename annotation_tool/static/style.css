@@ -64,6 +64,7 @@ video { max-width: 100%; max-height: 100%; background: #000; }
 .loudseg.lv-down_small { background: #e58a8a; opacity: 0.9; }
 .loudseg.lv-stop { background: #b8bfc9; opacity: 0.9; }
 .loudseg.lv-non_cmd { background: #9b59b6; opacity: 0.9; }
+.loudseg.lv-no_vocal { background: #4b6074; opacity: 0.9; }
 .loudseg.ignored { background: #3a3f47; opacity: 0.35; }
 .loudseg.cur { outline: 1px solid #ffd166; opacity: 1; z-index: 2; }
 .asrmark { position: absolute; top: 18px; height: 11px; width: 2px; cursor: pointer; z-index: 1; }
@@ -165,6 +166,7 @@ kbd { background: #2b3038; border: 1px solid #3a3f47; border-radius: 4px; paddin
 .unitseg.lv-stop { background: #b8bfc9; opacity: 0.9; }
 .unitseg.lv-non_cmd { background: #9b59b6; opacity: 0.9; }
 .unitseg.lv-custom { background: #7a3ff0; opacity: 0.9; }
+.unitseg.lv-no_vocal { background: #4b6074; opacity: 0.9; }
 .unitseg.ignored { background: #3a3f47; opacity: 0.35; }
 .unitseg.cur { outline: 1px solid #ffd166; opacity: 1; z-index: 2; }
 .unitseg .handle { height: 100%; }
@@ -204,6 +206,7 @@ kbd { background: #2b3038; border: 1px solid #3a3f47; border-radius: 4px; paddin
 .ustat.lv-stop { color: #b8bfc9; }
 .ustat.lv-non_cmd { color: #9b59b6; }
 .ustat.lv-custom { color: #b79cff; }
+.ustat.lv-no_vocal { color: #9db3c8; }
 .ustat.ign { color: #6b7280; }
 .vm-opt { min-width: 92px; padding: 8px 10px; font-size: 14px; }
 .vm-opt.prefill { outline: 2px solid #ffd166; outline-offset: 1px; }
