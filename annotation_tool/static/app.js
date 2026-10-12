@@ -15,6 +15,7 @@ const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       audio = $("vocalAudio"), waveCanvas = $("waveCanvas");
 
 const FRAME = 0.04; // 25fps 单帧
+let audioWavRetried = false; // v2.2: /media/ 视频加载失败时一次性回退原音轨 wav 的标志
 
 const VOICE_LABELS = { up: "上升", up_small: "上升一点", down: "下降", down_small: "下降一点", stop: "停", non_cmd: "无关段", custom: "自定义", no_vocal: "无人声段" };
 function voiceCn(t) { return VOICE_LABELS[t] || t || ""; }
@@ -43,6 +44,8 @@ const state = {
   panelTab: "actions",            // 右侧面板当前页签 actions | units
   // ---- v2.1 人声波形包络 ----
   wave: null,                     // /api/waveform 返回 {bin_sec,duration_sec,max,rms[]}；无 vocals.wav 时为 null
+  // ---- v2.2 音频模式 ----
+  audioMode: false,               // 当前文件夹无视频源（便携数据根）：video 元素直接播原音轨 wav，画面纯黑+居中提示
 };
 
 function clamp(t) { return Math.max(0, Math.min(state.duration || 1e9, t)); }
@@ -75,6 +78,9 @@ async function selectFolder(f) {
   state.folder = f; state.video = null;
   $("folderSel").value = f;
   const r = await fetch("/api/videos?folder=" + encodeURIComponent(f)).then(r => r.json());
+  // v2.2 音频模式：数据根无 raw_video 时后端返回 has_video=false，播放器改喂原音轨 wav
+  state.audioMode = r.has_video === false;
+  audioWavRetried = false;
   const loud = await fetch("/api/loud?folder=" + encodeURIComponent(f)).then(r => r.json());
   state.loudByVideo = {};
   for (const it of (loud.files || [])) {
@@ -167,7 +173,15 @@ async function selectVideo(name) {
   unitStopAt = null; // v1.7: 切视频清除段播放约束
   playAnchor = null; // v2.1: 切视频清除锚点播放
   state.wave = null; renderWave(); // v2.1: 新视频先清波形条（无数据占位），fetch 后重绘
-  video.src = "/media/" + encodeURIComponent(state.folder) + "/" + encodeURIComponent(name);
+  audioWavRetried = false; // v2.2: 每个新片源允许一次 wav 回退
+  if (state.audioMode) {
+    // v2.2 音频模式：数据根无视频，video 元素直接播原音轨 wav（audio-only 源画面天然纯黑）
+    $("audioModeTag").classList.remove("hidden");
+    video.src = "/api/audio?folder=" + encodeURIComponent(state.folder) + "&video=" + encodeURIComponent(name);
+  } else {
+    $("audioModeTag").classList.add("hidden");
+    video.src = "/media/" + encodeURIComponent(state.folder) + "/" + encodeURIComponent(name);
+  }
   if (keepVocal) setVocal(true);
   const [ann, asr, unitsR, waveR] = await Promise.all([
     fetch("/api/annotation?folder=" + encodeURIComponent(state.folder)
@@ -1033,6 +1047,15 @@ video.addEventListener("playing", () => $("transcoding").classList.add("hidden")
 video.addEventListener("timeupdate", updateTimeLabel);
 video.addEventListener("error", () => {
   if (!video.src) return;
+  // v2.2: 视频模式下 /media/ 加载失败（浏览器不支持编码等）→ 一次性回退播原音轨 wav
+  if (!state.audioMode && !audioWavRetried && video.src.indexOf("/media/") >= 0) {
+    audioWavRetried = true;
+    state.audioMode = true;
+    $("audioModeTag").classList.remove("hidden");
+    video.src = "/api/audio?folder=" + encodeURIComponent(state.folder) + "&video=" + encodeURIComponent(state.video);
+    video.load();
+    return;
+  }
   $("transcoding").textContent = "视频加载失败，请查看服务器窗口日志";
   $("transcoding").classList.remove("hidden");
 });

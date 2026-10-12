@@ -47,6 +47,13 @@ video { max-width: 100%; max-height: 100%; background: #000; }
   display: flex; align-items: center; justify-content: center;
   background: rgba(13, 14, 17, 0.75); color: #ffd166; font-size: 15px;
 }
+/* v2.2 音频模式常驻提示：居中、不拦截播放控件点击 */
+#audioModeTag {
+  position: absolute; top: 10px; left: 0; right: 0;
+  display: flex; justify-content: center;
+  color: #ffd166; font-size: 14px; pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
 
 #timeline {
   position: relative; height: 84px; margin-top: 10px;

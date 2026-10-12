@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 标注程序本地服务器 v1.4
 - 提供静态页面 (/)
 - API: /api/folders /api/videos /api/loud /api/annotation(GET/POST) /api/asr /api/units /api/vocals
@@ -13,9 +13,14 @@ v1.3: 新增 /api/vocals 提供 BS-RoFormer 人声分离产物 result/vocal_sepa
 v1.4: 新增 /api/units —— 以 result/asr_v2 的命令词为标注单元，命令词把所在响段切开，
       切剩空隙全部成 gap 单元（文本用 asr_v2 的 fragments 预填），响段外的命令词标 source=asr_only；
       /api/annotation POST 增加防误删校验（已有 actions 不得被清空，voice_segments 缺失时沿用旧值）
+v2.2: --data-root 可切换数据根（便携机指向 C:\Users\19614\portable\load_unload_video）；
+      数据根下无 raw_video 时自动降级音频模式——/api/videos 返回 audio_extract 的 wav
+      并带 has_video:false，新增 /api/audio 供浏览器直接播原音轨 wav
 启动: conda run --no-capture-output -n shanghai_cv python code/annotation_tool/server.py
+便携: python code/annotation_tool/server.py --data-root C:\Users\19614\portable\load_unload_video
 浏览器打开 http://localhost:8765
 """
+import argparse
 import json
 import re
 import subprocess
@@ -32,6 +37,7 @@ ANN_DIR = PROJECT_ROOT / "result" / "annotations"
 ASR_DIR = PROJECT_ROOT / "result" / "asr"
 ASR_V2_DIR = PROJECT_ROOT / "result" / "asr_v2"
 VOCAL_DIR = PROJECT_ROOT / "result" / "vocal_separation"
+AUDIO_DIR = PROJECT_ROOT / "result" / "audio_extract"  # 原音轨 wav（v2.2 音频模式播放源）
 CACHE_DIR = PROJECT_ROOT / "result" / "annotation_cache"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -56,18 +62,31 @@ def safe_name(s: str) -> str:
 
 
 def list_folders():
-    """有响段 JSON 且原始视频文件夹存在的日期文件夹"""
+    """有响段 JSON 且原始视频文件夹（v2.2: 或音频文件夹）存在的日期文件夹"""
     if not LOUD_DIR.is_dir():
         return []
-    return [p.stem for p in sorted(LOUD_DIR.glob("*.json")) if (RAW_DIR / p.stem).is_dir()]
+    return [p.stem for p in sorted(LOUD_DIR.glob("*.json"))
+            if (RAW_DIR / p.stem).is_dir() or (AUDIO_DIR / p.stem).is_dir()]
 
 
 def list_videos(folder: str):
+    """有原始视频返回视频名；v2.2 无视频时回退 audio_extract 的 wav（音频模式）"""
     d = RAW_DIR / folder
-    if not d.is_dir():
-        return []
-    return sorted(p.name for p in d.iterdir()
-                  if p.suffix.lower() in VIDEO_EXTS and p.is_file())
+    if d.is_dir():
+        vids = sorted(p.name for p in d.iterdir()
+                      if p.suffix.lower() in VIDEO_EXTS and p.is_file())
+        if vids:
+            return vids
+    ad = AUDIO_DIR / folder
+    if ad.is_dir():
+        return sorted(p.name for p in ad.iterdir() if p.suffix.lower() == ".wav" and p.is_file())
+    return []
+
+
+def folder_has_video(folder: str) -> bool:
+    """该日期文件夹是否有可播视频源（否则前端进音频模式）"""
+    d = RAW_DIR / folder
+    return d.is_dir() and any(p.suffix.lower() in VIDEO_EXTS and p.is_file() for p in d.iterdir())
 
 
 def _load_loud_json(d: Path, folder: str):
@@ -480,7 +499,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/folders":
                 return self.send_json({"folders": list_folders()})
             if path == "/api/videos":
-                return self.send_json({"videos": list_videos(safe_name(q.get("folder", [""])[0]))})
+                folder = safe_name(q.get("folder", [""])[0])
+                return self.send_json({"videos": list_videos(folder),
+                                       "has_video": folder_has_video(folder)})
             if path == "/api/loud":
                 return self.send_json(load_loud(safe_name(q.get("folder", [""])[0])))
             if path == "/api/annotation":
@@ -516,6 +537,13 @@ class Handler(BaseHTTPRequestHandler):
                 folder = safe_name(q.get("folder", [""])[0])
                 video = safe_name(q.get("video", [""])[0])
                 return self.send_json(load_waveform(folder, video))
+            if path == "/api/audio":  # v2.2 音频模式：直接播 audio_extract 的原音轨 wav
+                folder = safe_name(q.get("folder", [""])[0])
+                video = safe_name(q.get("video", [""])[0])
+                p = AUDIO_DIR / folder / (Path(video).stem + ".wav")
+                if not p.is_file():
+                    return self.send_error(404, "无音频文件")
+                return self.send_media_range(p, "audio/wav")
             if path.startswith("/media/"):
                 parts = [safe_name(unquote(x)) for x in path[len("/media/"):].split("/") if x]
                 if len(parts) != 2:
@@ -563,10 +591,35 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def apply_data_root(root: str):
+    """v2.2: --data-root 切换数据根（便携机指 C:\\Users\\19614\\portable\\load_unload_video）"""
+    global PROJECT_ROOT, RAW_DIR, LOUD_DIR, LOUD_V_DIR, ANN_DIR, ASR_DIR, ASR_V2_DIR, \
+           VOCAL_DIR, AUDIO_DIR, CACHE_DIR
+    PROJECT_ROOT = Path(root).resolve()
+    RAW_DIR = PROJECT_ROOT / "raw_video"
+    LOUD_DIR = PROJECT_ROOT / "result" / "loud_segments"
+    LOUD_V_DIR = PROJECT_ROOT / "result" / "loud_segments_vocals"
+    ANN_DIR = PROJECT_ROOT / "result" / "annotations"
+    ASR_DIR = PROJECT_ROOT / "result" / "asr"
+    ASR_V2_DIR = PROJECT_ROOT / "result" / "asr_v2"
+    VOCAL_DIR = PROJECT_ROOT / "result" / "vocal_separation"
+    AUDIO_DIR = PROJECT_ROOT / "result" / "audio_extract"
+    CACHE_DIR = PROJECT_ROOT / "result" / "annotation_cache"
+
+
 def main():
-    server = Server((HOST, PORT), Handler)
-    print(f"标注服务器已启动: http://localhost:{PORT}")
-    print(f"  原始视频: {RAW_DIR}")
+    ap = argparse.ArgumentParser(description="标注服务器（v2.2 支持 --data-root 切换数据根）")
+    ap.add_argument("--data-root", default=None,
+                    help="数据根目录（含 raw_video/ 与 result/）；缺省取代码位置推导的仓库根")
+    ap.add_argument("--port", type=int, default=PORT, help=f"监听端口，默认 {PORT}")
+    args = ap.parse_args()
+    if args.data_root:
+        apply_data_root(args.data_root)
+    port = args.port
+    server = Server((HOST, port), Handler)
+    print(f"标注服务器已启动: http://localhost:{port}")
+    print(f"  数据根  : {PROJECT_ROOT}" + ("（--data-root）" if args.data_root else ""))
+    print(f"  原始视频: {RAW_DIR}" + ("" if RAW_DIR.is_dir() else "  【缺失→音频模式】"))
     print(f"  响段目录: {LOUD_DIR}")
     print(f"  人声响段: {LOUD_V_DIR}（新视频优先，已标视频按视频锁定沿用整轨版）")
     print(f"  标注输出: {ANN_DIR}")
