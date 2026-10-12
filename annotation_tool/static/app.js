@@ -584,6 +584,24 @@ function splitUnitAtPlayhead() { // S：播放头处把当前单元切成两半�
   flash(`已在 ${fmt(mid)} 切分，两半均回到未标`);
 }
 
+function createUnitFromPoints() { // A：把 I/O 两点合成一个新标注单元（manual，用于补生成单元没覆盖的空隙）
+  if (state.inPoint == null || state.outPoint == null) return flash("先用 I / O 定入点与出点，再按 A 新建片段");
+  let a = Math.min(state.inPoint, state.outPoint), b = Math.max(state.inPoint, state.outPoint);
+  if (b - a < 0.05) return flash("入出点间隔太小（<0.05s），无法成段");
+  if (state.units.some(u => a < u.end_sec - 0.001 && u.start_sec - 0.001 < b)) return flash("新片段与已有单元重叠，不能创建");
+  a = +a.toFixed(3); b = +b.toFixed(3);
+  const u = { id: `manual:${a.toFixed(2)}-${b.toFixed(2)}`, kind: "manual", source: "manual_edit",
+              start_sec: a, end_sec: b, dur_sec: +(b - a).toFixed(3),
+              label: "", status: null, word: "", text: "", sentence: "" };
+  let i = 0;
+  while (i < state.units.length && state.units[i].start_sec < a) i++; // 按起点插入保持有序
+  state.units.splice(i, 0, u);
+  state.curUnit = i;
+  state.inPoint = state.outPoint = null;
+  renderPoints(); renderTimeline(); renderUnitList(); scheduleSave();
+  flash(`已新建单元 ${fmt(a)}~${fmt(b)}，数字键 1~8 打标`);
+}
+
 function mergeNextUnit() { // M：当前单元与下一个相邻单元手动合并（不受间隔 <0.5s 自动合并限制）
   if (state.curUnit == null) return flash("先用 ←/→ 选中一个单元");
   const i = state.curUnit, a = state.units[i], b = state.units[i + 1];
@@ -1103,6 +1121,9 @@ window.addEventListener("keydown", (e) => {
       if (state.mode === "voice") { e.preventDefault(); splitUnitAtPlayhead(); } break; // 切分当前单元
     case "m": case "M":
       if (state.mode === "voice") { e.preventDefault(); mergeNextUnit(); } break; // 当前单元与下一相邻单元合并
+    case "a": case "A":
+      if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+A
+      if (state.mode === "voice") { e.preventDefault(); createUnitFromPoints(); } break; // I/O 两点新建单元
     case "i": case "I":
       state.inPoint = clamp(video.currentTime);
       renderPoints(); flash("入点 " + fmt(state.inPoint)); break;
