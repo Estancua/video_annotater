@@ -212,6 +212,12 @@ kbd { background: #2b3038; border: 1px solid #3a3f47; border-radius: 4px; paddin
   border: 1px solid #2a2e34; border-radius: 3px; padding: 2px 5px; font-size: 12px;
 }
 .urow .utext:focus { border-color: #2f6fdb; outline: none; }
+.udel {
+  flex: none; width: 18px; height: 18px; line-height: 1; padding: 0; cursor: pointer;
+  background: transparent; color: #5b626c; border: 1px solid transparent; border-radius: 3px; font-size: 11px;
+}
+.urow:hover .udel { color: #9aa3ad; }
+.udel:hover { background: #3a2a2c; border-color: #6b3a3f; color: #e58a8a; }
 .ustat { flex: none; font-size: 11px; color: #6b7280; min-width: 28px; text-align: right; }
 .ustat.lv-up, .ustat.lv-up_small { color: #6fcf97; }
 .ustat.lv-down, .ustat.lv-down_small { color: #e58a8a; }

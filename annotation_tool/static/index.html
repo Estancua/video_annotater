@@ -48,7 +48,7 @@
       <span id="timeLabel">00:00.000 / 00:00.000</span>
       <span id="axisTag">轴:下 微调1帧</span>
       <span id="pendingLabel"></span>
-      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · ←/→ 跳相邻 · 点段内后空格从该点播到段尾 · 1~7 打标 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · A 用I/O两点新建片段 · Delete 删单元 · 间隔&lt;0.5s 自动并一条）· 顶部紫条=人声波形（点击/拖动定位）</span>
+      <span id="hint">空格播放 · ←/→ 步进（↑/↓ 换轴） · I/O 入出点 · 1 上升 · 2 下降 · Tab 响段跳转 · n/b ASR参考点 · W 单元打标（选中/跳转自动播该段 · ←/→ 跳相邻 · 点段内后空格从该点播到段尾 · 1~7 打标 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · A 用I/O两点新建片段 · Delete/行内 ✕ 删单元 · 间隔&lt;0.5s 自动并一条）· 顶部紫条=人声波形（点击/拖动定位）</span>
     </div>
   </section>
 
@@ -83,7 +83,7 @@
       <button class="vm-opt" data-label="no_vocal">8 无人声段</button>
       <button class="vm-opt vm-cancel" id="vmCancel">Esc 取消</button>
     </div>
-    <p class="muted">打标后自动跳到下一个未标单元；S 在播放头处切分当前单元，Delete 删除当前单元</p>
+    <p class="muted">打标后自动跳到下一个未标单元；S 在播放头处切分当前单元，Delete 删除当前单元，点行右侧 ✕ 删除任意片段</p>
   </div>
 </div>
 
@@ -115,8 +115,9 @@
       <tr><td><kbd>Enter</kbd>（单元模式）</td><td>打开当前单元打标弹窗；语音文本自动预填（空隙=非命令片段，命令词=词本身），整句灰字参考</td></tr>
       <tr><td><kbd>S</kbd>（单元模式）</td><td>播放头处把当前单元切成两半（手工单元），两半回到未标态</td></tr>
       <tr><td><kbd>M</kbd>（单元模式）</td><td>把当前单元与<b>下一个相邻单元</b>手动合并成一条（任意间隔都并）：文本/命令词空格拼接，已标标签去重后用 + 连接（如 <b>stop+up</b>），两边都未标则合并后仍未标；想和上一段并就先用 <kbd>←</kbd> 选中上一段再按 <kbd>M</kbd></td></tr>
-      <tr><td><kbd>A</kbd>（单元模式）</td><td>新建片段：先用 <kbd>I</kbd>/<kbd>O</kbd> 在空白处定入点与出点，按 <kbd>A</kbd> 把两点合成一条<b>手工单元</b>（补生成单元没覆盖的空隙）；入出点间隔 &lt; 0.05s 或与已有单元重叠则拒绝；成段后自动选中该新行，可直接用 <kbd>1</kbd>~<kbd>8</kbd> 打标</td></tr>
+      <tr><td><kbd>A</kbd>（单元模式）</td><td>新建片段：先用 <kbd>I</kbd>/<kbd>O</kbd> 在空白处定入点与出点，按 <kbd>A</kbd> 把两点合成一条<b>手工单元</b>（补生成单元没覆盖的空隙）；入出点间隔 &lt; 0.05s 或与已有单元重叠则拒绝；成段后自动选中该新行，可直接用 <kbd>1</kbd>~<kbd>8</kbd> 打标。<b>视频标注模式下按 A 会提示先按 <kbd>W</kbd> 切到单元模式</b>（Enter/S/M/Delete 同样只在单元模式生效）</td></tr>
       <tr><td><kbd>Delete</kbd>（单元模式）</td><td>删除当前单元：生成单元记入 removed_unit_ids 不再出现，手工单元直接移除</td></tr>
+      <tr><td>单元行右侧 <kbd>✕</kbd></td><td>不选中也能删：<b>行内删除该片段</b>，作用范围与 <kbd>Delete</kbd> 相同（生成单元记入 removed_unit_ids，手工单元直接移除）；删掉与别的片段重叠的旧预标注行就用它。悬停行才显眼，点击不会选中该行的文本框</td></tr>
       <tr><td>单元列表文本框</td><td>右侧“标注单元”页签内可直接编辑每个单元的文本，失焦即保存</td></tr>
       <tr><td>🎤 人声轨按钮</td><td>开启后视频静音、独立播放 result/vocal_separation/…/vocals.wav，seek/暂停/倍速跟随视频；无分离文件自动回退原音</td></tr>
       <tr><td>单元层配色</td><td>命令词单元=蓝框、空隙=浅灰、手工=紫；绿系=上升、红系=下降、青=停、紫=自定义、深灰半透明=无关段、蓝灰=无人声段；金框=当前单元；拖动单元两端改边界</td></tr>

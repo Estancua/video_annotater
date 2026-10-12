@@ -8,6 +8,9 @@
 // v2.0: M 键将当前单元与下一相邻单元手动合并（任意间隔；label 去重 + 拼接、原 id 记入 removed 防重）
 // v2.1: 时间轴顶部人声波形包络条（点击/拖动定位）；空格锚点播放（点段内→从该点播到段尾自停）；
 //       W 模式 ←/→ 改为跳相邻单元（不筛未标）；响段基准改人声轨（服务端按视频锁定，前端无感）
+// v2.3: 单元模式下 A 键用 I/O 两点新建手工片段（补生成单元没覆盖的空隙）
+// v2.4: 单元列表行内 ✕ 删除该片段（与 Delete 键共用 removeUnitAt，选中行下标随删除修正）；
+//       视频模式下按 A 不再静默失效，改为提示「按 W 切到单元打标模式」
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
@@ -554,14 +557,21 @@ function afterUnitLabel() {
   selectUnit(nxt);
 }
 
+function removeUnitAt(i) { // 删掉指定下标的单元（v2.4：Delete 键与列表行内 ✕ 共用）
+  if (i == null || i < 0 || i >= state.units.length) return;
+  const u = state.units[i];
+  const gen = u.kind !== "manual" && u.source !== "manual_edit"; // 生成单元需记入 removed，否则下次重建又回来
+  if (gen && u.id) state.removedUnitIds.push(u.id);
+  state.units.splice(i, 1);
+  if (state.curUnit === i) state.curUnit = null;
+  else if (state.curUnit != null && state.curUnit > i) state.curUnit--;
+  renderTimeline(); renderUnitList(); scheduleSave();
+  flash(`已删除单元 ${fmt(u.start_sec)} - ${fmt(u.end_sec)}` + (gen ? "（生成单元已记入 removed，重建时不再出现）" : "（手工单元，直接移除）"));
+}
+
 function removeCurrentUnit() { // Delete：删掉当前单元（生成单元记入 removed_unit_ids，手工单元直接移除）
   if (state.curUnit == null) return flash("先选中一个单元再删除");
-  const u = state.units[state.curUnit];
-  if (u.kind !== "manual" && u.source !== "manual_edit" && u.id) state.removedUnitIds.push(u.id);
-  state.units.splice(state.curUnit, 1);
-  state.curUnit = null;
-  renderTimeline(); renderUnitList(); scheduleSave();
-  flash(`已删除单元 ${fmt(u.start_sec)} - ${fmt(u.end_sec)}（可 Ctrl+Z 恢复前请先保存？改动即时生效）`);
+  removeUnitAt(state.curUnit);
 }
 
 function splitUnitAtPlayhead() { // S：播放头处把当前单元切成两半，两半回到未标
@@ -662,7 +672,12 @@ function renderUnitList() {
     const st = document.createElement("span");
     st.className = "ustat" + (u.status === "labeled" ? " lv-" + u.label : u.status === "ignored" ? " ign" : "");
     st.textContent = u.status === "labeled" ? voiceCn(u.label) : u.status === "ignored" ? "无关" : "·";
-    row.appendChild(badge); row.appendChild(span); row.appendChild(inp); row.appendChild(st);
+    const del = document.createElement("button"); // v2.4: 行内删除该片段（等同选中后按 Delete）
+    del.className = "udel";
+    del.textContent = "✕";
+    del.title = `删除该片段 ${u.start_sec.toFixed(1)}-${u.end_sec.toFixed(1)}`;
+    del.onclick = (e) => { e.stopPropagation(); removeUnitAt(i); };
+    row.appendChild(badge); row.appendChild(span); row.appendChild(inp); row.appendChild(st); row.appendChild(del);
     row.onclick = () => selectUnit(i);
     box.appendChild(row);
   });
@@ -754,7 +769,7 @@ function setMode(m) {
   setPanelTab(m === "voice" ? "units" : "actions");
   renderTimeline(); renderUnitList();
   flash(m === "voice"
-    ? "单元打标：←/→ 跳相邻单元（自动播该段） · 空格播当前段（点过段内则从该点播到段尾） · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元"
+    ? "单元打标：←/→ 跳相邻单元（自动播该段） · 空格播当前段（点过段内则从该点播到段尾） · 1~5 标签 · 6 无关段 · 7 自定义 · 8 无人声段 · Enter 弹窗 · S 切分 · M 与下一段合并 · Delete 删单元 · 行内 ✕ 删任意片段"
     : "视频标注模式（动作 actions 与单元互不影响）");
 }
 
@@ -1123,7 +1138,9 @@ window.addEventListener("keydown", (e) => {
       if (state.mode === "voice") { e.preventDefault(); mergeNextUnit(); } break; // 当前单元与下一相邻单元合并
     case "a": case "A":
       if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+A
-      if (state.mode === "voice") { e.preventDefault(); createUnitFromPoints(); } break; // I/O 两点新建单元
+      if (state.mode === "voice") { e.preventDefault(); createUnitFromPoints(); }
+      else flash("A 新建片段只在「单元打标」模式生效：按 W 切换（Enter/S/M/Delete 同理）"); // v2.4: 视频模式按 A 不再静默失效
+      break;
     case "i": case "I":
       state.inPoint = clamp(video.currentTime);
       renderPoints(); flash("入点 " + fmt(state.inPoint)); break;
