@@ -11,6 +11,8 @@
 // v2.3: 单元模式下 A 键用 I/O 两点新建手工片段（补生成单元没覆盖的空隙）
 // v2.4: 单元列表行内 ✕ 删除该片段（与 Delete 键共用 removeUnitAt，选中行下标随删除修正）；
 //       视频模式下按 A 不再静默失效，改为提示「按 W 切到单元打标模式」
+// v2.5: mergeUnits 不再把 id 失配的旧 cmd/gap 生成行原样带回（重叠鬼影行来源）；
+//       这类行改按最大重叠量归属到新单元并继承 label/status，完全无重叠则丢弃
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
@@ -138,16 +140,24 @@ function mergeUnits(genUnits, savedUnits, removedIds) {
     if (consumed.has(s.id) || removed.has(s.id) || !/^(cmd|gap):/.test(s.id)) continue;
     if (manualSaved.some(mi => (mi.start_sec ?? 1e18) <= (s.start_sec ?? 0) + 1e-6
         && (mi.end_sec ?? -1) >= (s.end_sec ?? 1e18) - 1e-6)) { consumed.add(s.id); continue; } // 已被切分子块覆盖 → 静默消化，避免鬼影行
-    const g = byMerged[s.id]
+    let g = byMerged[s.id]
       || out.find(u => u.start_sec <= (s.start_sec ?? -1) + 1e-6
                  && u.end_sec >= (s.end_sec ?? 1e18) - 1e-6);
-    if (!g) continue; // 无法归属 → 仍按手工条目带回
-    consumed.add(s.id);
+    if (!g) { // v2.5: 服务端裁剪过边界后旧的 cmd/gap 行不再被新单元完全包含 → 按最大重叠量归属，标签/状态不丢
+      let best = 0;
+      for (const u of out) {
+        const ov = Math.min(u.end_sec, s.end_sec ?? -1e18) - Math.max(u.start_sec, s.start_sec ?? 1e18);
+        if (ov > best) { best = ov; g = u; }
+      }
+    }
+    consumed.add(s.id); // v2.5: 连一点重叠都没有 → 判定为陈旧生成行，直接丢弃，不再带回成鬼影行
+    if (!g) continue;
     if (!g.label && s.label) g.label = s.label;
     if (!g.status && s.status) g.status = s.status;
   }
   const genIds = new Set(genUnits.map(u => u.id));
   for (const s of (savedUnits || [])) {
+    if (/^(cmd|gap):/.test(s.id)) continue; // v2.5: id 失配的生成行一律不再原样带回（重叠鬼影行的来源），标签已由上面继承
     if (!genIds.has(s.id) && !consumed.has(s.id) && !removed.has(s.id)) { // 切分/新增的手工单元原样带回
       out.push({ kind: "manual", label: "", word: "", text: "", sentence: "",
                  source: "manual_edit", status: null, ...s });

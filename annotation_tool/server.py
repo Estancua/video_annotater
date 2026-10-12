@@ -16,6 +16,9 @@ v1.4: 新增 /api/units —— 以 result/asr_v2 的命令词为标注单元，�
 v2.2: --data-root 可切换数据根（便携机指向 C:\Users\19614\portable\load_unload_video）；
       数据根下无 raw_video 时自动降级音频模式——/api/videos 返回 audio_extract 的 wav
       并带 has_video:false，新增 /api/audio 供浏览器直接播原音轨 wav
+v2.5: 修预标注单元互相重叠——build_units 里命令词按起点排序后逐个裁剪（重叠时截断「起点较早」
+      的那条到后一条起点，截空则整条丢弃），空隙改为「响段减去全部命令词区间」而非只减归属本段的；
+      _merge_close_units 改用组内 running max end 判相邻。重叠不再被 0.5s 合并放大成跨段鬼影单元
 启动: conda run --no-capture-output -n shanghai_cv python code/annotation_tool/server.py
 便携: python code/annotation_tool/server.py --data-root C:\Users\19614\portable\load_unload_video
 浏览器打开 http://localhost:8765
@@ -258,11 +261,15 @@ MERGE_GAP_SEC = 0.5
 def _merge_close_units(units, gap_sec=MERGE_GAP_SEC):
     """相邻单元间隔 < gap_sec（含无缝衔接）合并为一条；多条并一条时 label 取非空去重拼接"""
     groups = []
-    for u in units:
-        if groups and u["start_sec"] - groups[-1][-1]["end_sec"] < gap_sec:
+    tails = []  # v2.5: 每组内已见到的最大 end_sec，不能用「组内最后一个」判相邻——
+                # 嵌套/重叠时最后一条可能比组内其他条短，会把本该同组的单元劈到下一组，产出仍重叠的两条
+    for u in sorted(units, key=lambda x: (x["start_sec"], x["end_sec"])):
+        if groups and u["start_sec"] - tails[-1] < gap_sec:
             groups[-1].append(u)
+            tails[-1] = max(tails[-1], u["end_sec"])
         else:
             groups.append([u])
+            tails.append(u["end_sec"])
     merged = []
     for g in groups:
         if len(g) == 1:
@@ -326,17 +333,28 @@ def build_units(loud_segs, asr):
                     parts.append(t)
         return " ".join(parts)
 
-    assigned, orphans = {}, []
-    for c in cmds:
-        seg = host_seg(c)
-        if seg is None:
-            orphans.append(c)
-        else:
-            assigned.setdefault(id(seg), []).append(c)
+    # v2.5: 命令词先按起点排序再逐个裁剪重叠——重叠时把「起点较早」那条的终点截到本条起点，
+    #       截到没长度就整条丢弃（被完全包住的短词因此能完整保留）。ASR 的超长命令词命中会
+    #       盖住相邻的正常词，这就是 cmd/cmd 重叠、并被 0.5s 合并进一步放大的源头。
+    clipped = 0
+    spans = []
+    for c in sorted(cmds, key=lambda x: (round(x.get("start_sec") or 0, 3),
+                                         -(round(x.get("end_sec") or 0, 3)))):
+        s = round(float(c.get("start_sec") or 0), 3)
+        e = round(float(c.get("end_sec") or 0), 3)
+        if e <= s:
+            continue
+        while spans and s < spans[-1][1]:
+            spans[-1][1] = s
+            clipped += 1
+            if spans[-1][1] - spans[-1][0] < 0.05:
+                spans.pop()
+            else:
+                break
+        spans.append([s, e, c])
 
     units = []
-    for c in cmds:
-        s, e = c.get("start_sec", 0), c.get("end_sec", 0)
+    for s, e, c in spans:
         in_seg = host_seg(c) is not None
         units.append({
             "id": _unit_id("cmd", s, e, c.get("label", "")),
@@ -344,32 +362,45 @@ def build_units(loud_segs, asr):
             "label": c.get("label", ""),
             "word": c.get("word", ""),
             "text": c.get("word", ""),
-            "start_sec": round(s, 3),
-            "end_sec": round(e, 3),
+            "start_sec": s,
+            "end_sec": e,
             "dur_sec": round(e - s, 3),
             "source": "loud" if in_seg else "asr_only",
             "sentence": c.get("sentence") or sentence_of(s, e),
         })
 
+    # v2.5: 空隙改为「响段减去全部命令词区间」，而不是只减去按中点归属到本段的命令词。
+    #       跨段命中、或归属被别的段抢走的命令词，原先会在本段留下与别处 cmd 重叠的 gap。
+    cmd_iv = sorted((u["start_sec"], u["end_sec"]) for u in units)
+
+    def add_gap(a, b):
+        if b - a < 0.05:
+            return
+        units.append({
+            "id": _unit_id("gap", a, b),
+            "kind": "gap",
+            "label": "",
+            "word": "",
+            "text": frag_text(a, b),
+            "start_sec": round(a, 3),
+            "end_sec": round(b, 3),
+            "dur_sec": round(b - a, 3),
+            "source": "loud_gap",
+            "sentence": sentence_of(a, b),
+        })
+
     for seg in loud_segs:
-        inner = sorted(assigned.get(id(seg), []), key=lambda c: c.get("start_sec", 0))
-        heads = [seg["start_sec"]] + [c.get("end_sec", 0) for c in inner]
-        tails = [c.get("start_sec", 0) for c in inner] + [seg["end_sec"]]
-        for a, b in zip(heads, tails):
-            if b - a < 0.05:
+        cursor = seg["start_sec"]
+        for cs, ce in cmd_iv:
+            if ce <= cursor:
                 continue
-            units.append({
-                "id": _unit_id("gap", a, b),
-                "kind": "gap",
-                "label": "",
-                "word": "",
-                "text": frag_text(a, b),
-                "start_sec": round(a, 3),
-                "end_sec": round(b, 3),
-                "dur_sec": round(b - a, 3),
-                "source": "loud_gap",
-                "sentence": sentence_of(a, b),
-            })
+            if cs >= seg["end_sec"]:
+                break
+            add_gap(cursor, min(cs, seg["end_sec"]))
+            cursor = ce
+            if cursor >= seg["end_sec"]:
+                break
+        add_gap(cursor, seg["end_sec"])
 
     units.sort(key=lambda u: (u["start_sec"], u["end_sec"]))
     raw_count = len(units)
@@ -381,6 +412,7 @@ def build_units(loud_segs, asr):
         "asr_only": sum(1 for u in units if u["source"] == "asr_only"),
         "loud_segs": len(loud_segs),
         "merged": raw_count - len(units),
+        "cmd_clipped": clipped,  # v2.5: 本次被裁剪/丢弃的重叠命令词条数
     }
     return units, stats
 
