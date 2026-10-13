@@ -34,6 +34,24 @@ aside { overflow-y: auto; background: #191c21; }
 }
 .vitem:hover { background: #232830; }
 .vitem.active { background: #2f6fdb; color: #fff; }
+/* v2.6 左侧列表：顶部确认进度/筛选 + 行首 V/U 小灯（绿实心=已确认，灰空心=未确认） */
+.vlistHead {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 6px 10px; background: #14171b; border-bottom: 1px solid #2a2e34;
+  font-size: 12px; color: #b9c2cf;
+}
+.vfilter { display: flex; align-items: center; gap: 4px; cursor: pointer; color: #8b95a5; }
+.vitem { display: flex; align-items: center; gap: 5px; }
+.vitem .vname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lamp {
+  flex: none; width: 14px; height: 14px; line-height: 12px; text-align: center;
+  border-radius: 50%; border: 1px solid #4a5563; color: #4a5563;
+  font-size: 9px; font-weight: 700;
+}
+.lamp.on { background: #2ea04f; border-color: #2ea04f; color: #eafbe7; }
+.vitem.active .lamp { border-color: #cfe0ff; color: #cfe0ff; }
+.vitem.active .lamp.on { border-color: #2ea04f; background: #2ea04f; color: #fff; }
 
 #center { display: flex; flex-direction: column; padding: 12px; min-width: 0; }
 #playerWrap {

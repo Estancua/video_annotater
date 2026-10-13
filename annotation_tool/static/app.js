@@ -13,6 +13,8 @@
 //       视频模式下按 A 不再静默失效，改为提示「按 W 切到单元打标模式」
 // v2.5: mergeUnits 不再把 id 失配的旧 cmd/gap 生成行原样带回（重叠鬼影行来源）；
 //       这类行改按最大重叠量归属到新单元并继承 label/status，完全无重叠则丢弃
+// v2.6: 人工确认标志（confirm_video / confirm_unit 两个独立布尔）：Q 跟随当前模式 toggle，
+//       再按一次取消；内容变动一律不影响标志；左侧列表行首 V/U 两个小灯 + 顶部确认进度/筛选
 const $ = (id) => document.getElementById(id);
 const video = $("video"), timeline = $("timeline"), loudLayer = $("loudLayer"),
       asrLayer = $("asrLayer"),
@@ -51,6 +53,11 @@ const state = {
   wave: null,                     // /api/waveform 返回 {bin_sec,duration_sec,max,rms[]}；无 vocals.wav 时为 null
   // ---- v2.2 音频模式 ----
   audioMode: false,               // 当前文件夹无视频源（便携数据根）：video 元素直接播原音轨 wav，画面纯黑+居中提示
+  // ---- v2.6 人工确认 ----
+  confirmVideo: false,            // 当前视频「动作列表」模式已人工确认（json 顶层 confirm_video）
+  confirmUnit: false,             // 当前视频「标注单元」模式已人工确认（json 顶层 confirm_unit）
+  annStatus: {},                  // 当前文件夹 {视频名: {has_ann, confirm_video, confirm_unit}}，/api/videos 带 + 本地实时同步
+  onlyUnconfirmed: false,         // 左侧列表筛选：只看「有标注但未确认」，默认关闭且不改变排序
 };
 
 function clamp(t) { return Math.max(0, Math.min(state.duration || 1e9, t)); }
@@ -85,6 +92,7 @@ async function selectFolder(f) {
   const r = await fetch("/api/videos?folder=" + encodeURIComponent(f)).then(r => r.json());
   // v2.2 音频模式：数据根无 raw_video 时后端返回 has_video=false，播放器改喂原音轨 wav
   state.audioMode = r.has_video === false;
+  state.annStatus = r.ann_status || {};   // v2.6 列表灯与确认进度的唯一数据源
   audioWavRetried = false;
   const loud = await fetch("/api/loud?folder=" + encodeURIComponent(f)).then(r => r.json());
   state.loudByVideo = {};
@@ -95,16 +103,63 @@ async function selectFolder(f) {
   if ((r.videos || []).length) selectVideo(r.videos[0]);
 }
 
+// v2.6 确认进度：分母只算「有标注的文件」，分子=两个模式都确认过的文件
+function confirmStats() {
+  let ann = 0, both = 0, vid = 0, unit = 0;
+  for (const f of Object.values(state.annStatus)) {
+    if (!f.has_ann) continue;
+    ann++;
+    if (f.confirm_video) { vid++; if (f.confirm_unit) both++; }
+    if (f.confirm_unit) unit++;
+  }
+  return { ann, both, vid, unit };
+}
+
 function renderVideoList(videos) {
   state.videos = videos;
   const box = $("videoList");
-  box.innerHTML = "";
+  const s = confirmStats();
+  box.innerHTML = '<div class="vlistHead">'
+    + '<span id="confirmProgress" title="动作 ' + s.vid + '/' + s.ann + ' · 单元 ' + s.unit + '/' + s.ann + '">'
+    + '已确认 ' + s.both + ' / 已标注 ' + s.ann + '</span>'
+    + '<label class="vfilter" title="只看有标注但未确认的文件（不改变排序）">未确认'
+    + '<input type="checkbox" id="confirmFilter"' + (state.onlyUnconfirmed ? " checked" : "") + '></label>'
+    + '</div>';
+  $("confirmFilter").onchange = (e) => {
+    state.onlyUnconfirmed = e.target.checked;
+    renderVideoList(state.videos);
+  };
+  const list = document.createElement("div");
   for (const v of videos) {
+    const f = state.annStatus[v] || {};
+    if (state.onlyUnconfirmed && !(f.has_ann && !(f.confirm_video && f.confirm_unit))) continue;
     const d = document.createElement("div");
-    d.className = "vitem"; d.textContent = v; d.title = v; d.dataset.name = v;
+    d.className = "vitem" + (v === state.video ? " active" : "");
+    d.title = v; d.dataset.name = v;
+    d.innerHTML = '<span class="lamp' + (f.confirm_video ? " on" : "") + '">V</span>'
+                + '<span class="lamp' + (f.confirm_unit ? " on" : "") + '">U</span>';
+    const nm = document.createElement("span");
+    nm.className = "vname"; nm.textContent = v;
+    d.appendChild(nm);
     d.onclick = () => selectVideo(v);
-    box.appendChild(d);
+    list.appendChild(d);
   }
+  box.appendChild(list);
+}
+
+// v2.6 切换确认标志：只认「我打没打标」，不看内容变化，不做任何门槛校验；再按一次即取消
+function toggleConfirm() {
+  if (!state.folder || !state.video) { flash("尚未选择视频"); return; }
+  const isVideo = state.mode === "video";
+  if (isVideo) state.confirmVideo = !state.confirmVideo;
+  else state.confirmUnit = !state.confirmUnit;
+  const f = state.annStatus[state.video] || (state.annStatus[state.video] = {});
+  f.has_ann = f.has_ann || state.actions.length > 0
+              || state.units.some(u => u.label || u.status);   // 本次会话内标过也算已标注，免得切文件夹前漏计
+  f.confirm_video = state.confirmVideo;
+  f.confirm_unit = state.confirmUnit;
+  renderVideoList(state.videos);
+  scheduleSave();
 }
 
 function seedVoice() {
@@ -209,6 +264,15 @@ async function selectVideo(name) {
   if (waveR && waveR.available && Array.isArray(waveR.rms)) state.wave = waveR;
   renderWave();
   state.actions = (ann.actions || []).map(a => ({ type: a.type, start: a.start_sec, end: a.end_sec }));
+  // v2.6: 确认标志以磁盘为准（缺字段一律未确认），同步列表缓存后重画灯与进度
+  state.confirmVideo = !!ann.confirm_video;
+  state.confirmUnit = !!ann.confirm_unit;
+  const flagEntry = state.annStatus[name] || (state.annStatus[name] = {});
+  flagEntry.confirm_video = state.confirmVideo;
+  flagEntry.confirm_unit = state.confirmUnit;
+  flagEntry.has_ann = flagEntry.has_ann
+    || (ann.actions || []).length > 0 || (ann.speech_units || []).length > 0;
+  renderVideoList(state.videos);
   state.asr = (asr.commands || []).map(c => ({
     type: c.label, word: c.word, start: +c.start_sec || 0, end: +c.end_sec || 0,
   }));
@@ -952,6 +1016,9 @@ function buildPayload() {
       source: u.source || "", sentence: u.sentence || "",
     })),
     removed_unit_ids: state.removedUnitIds,
+    // v2.6: 人工确认标志（服务端整文件覆盖，必须始终回传，缺失时服务端沿用旧值）
+    confirm_video: !!state.confirmVideo,
+    confirm_unit: !!state.confirmUnit,
   };
 }
 function scheduleSave() {
@@ -1164,6 +1231,9 @@ window.addEventListener("keydown", (e) => {
       } else if (e.key === "1") quickType("up");
       else if (e.key === "2") quickType("down");
       break;
+    case "q": case "Q":
+      if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+Q
+      e.preventDefault(); toggleConfirm(); break; // v2.6 人工确认：跟随当前模式 toggle，再按一次取消
     case "n": case "N":
       if (e.ctrlKey || e.metaKey) break; // 不劫持 Ctrl+N
       e.preventDefault(); jumpAsr(1, e.shiftKey); break;  // 下一个参考点（Shift 限“停”）

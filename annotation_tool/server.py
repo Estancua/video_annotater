@@ -181,6 +181,22 @@ def save_annotation(folder: str, video: str, data: dict):
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def annotation_flags(folder: str, video: str):
+    """v2.6 左侧列表灯：一次读 json 给出是否有标注 + 两个人工确认标志（缺字段一律未确认）"""
+    res = {"has_ann": False, "confirm_video": False, "confirm_unit": False}
+    p = annotation_path(folder, video)
+    if not p.is_file():
+        return res
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return res
+    res["has_ann"] = bool(d.get("actions") or d.get("speech_units"))
+    res["confirm_video"] = bool(d.get("confirm_video"))
+    res["confirm_unit"] = bool(d.get("confirm_unit"))
+    return res
+
+
 def load_asr_v2(folder: str, video: str):
     """新版 ASR（含逐字时间戳与命令词之外的 fragments）；无则 exists:false"""
     p = ASR_V2_DIR / folder / f"{Path(video).stem}.json"
@@ -532,8 +548,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"folders": list_folders()})
             if path == "/api/videos":
                 folder = safe_name(q.get("folder", [""])[0])
-                return self.send_json({"videos": list_videos(folder),
-                                       "has_video": folder_has_video(folder)})
+                vids = list_videos(folder)
+                return self.send_json({"videos": vids, "has_video": folder_has_video(folder),
+                                       "ann_status": {v: annotation_flags(folder, v) for v in vids}})
             if path == "/api/loud":
                 return self.send_json(load_loud(safe_name(q.get("folder", [""])[0])))
             if path == "/api/annotation":
@@ -611,6 +628,10 @@ class Handler(BaseHTTPRequestHandler):
                                                 % len(old["actions"])}, 409)
             if "voice_segments" not in data and "voice_segments" in old:
                 data["voice_segments"] = old["voice_segments"]  # 旧字段不清空
+            # v2.6 人工确认标志：save_annotation 是整文件覆盖，本次未回传必须沿用旧值
+            for k in ("confirm_video", "confirm_unit"):
+                if k not in data and k in old:
+                    data[k] = old[k]
             save_annotation(folder, video, data)
             return self.send_json({"ok": True, "path": str(annotation_path(folder, video))})
         except (ValueError, KeyError) as e:
